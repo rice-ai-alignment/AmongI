@@ -1,11 +1,13 @@
-extends Node2D
+# Player.gd
+extends CharacterBody2D
 
+var speed = 200
 
-# Called when the node enters the scene tree for the first time.
-func _ready() -> void:
-	pass # Replace with function body.
-
-
-# Called every frame. 'delta' is the elapsed time since the previous frame.
-func _process(delta: float) -> void:
-	pass
+func move_agent(direction: String):
+	velocity = Vector2.ZERO
+	if direction == "left": velocity.x = -speed
+	elif direction == "right": velocity.x = speed
+	elif direction == "up": velocity.y = -speed
+	elif direction == "down": velocity.y = speed
+	
+	move_and_slide()
