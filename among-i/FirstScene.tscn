@@ -1,11 +1,6 @@
 [gd_scene format=3 uid="uid://bxlemvyn2ipuh"]
 
 [ext_resource type="Script" uid="uid://b6qkw5y4ny4nj" path="res://Server.gd" id="1_klfix"]
-[ext_resource type="Texture2D" uid="uid://bs2g7w4240wu6" path="res://icon.svg" id="2_0w2fn"]
 
 [node name="Node2D" type="Node2D" unique_id=1285183098]
 script = ExtResource("1_klfix")
-
-[node name="Sprite2D" type="Sprite2D" parent="." unique_id=1726545928]
-position = Vector2(50, -15)
-texture = ExtResource("2_0w2fn")
