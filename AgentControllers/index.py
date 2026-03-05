@@ -17,7 +17,7 @@ class AgentState(TypedDict):
 
 # Initialize Gemini (Flash is recommended for fast game response times)
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     google_api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0.2 # Lower temperature = more consistent game commands
 )
@@ -55,23 +55,28 @@ async def run_agent():
             print("Successfully connected to Godot!")
             
             while True:
-                # Receive state from Godot
+               # 1. Receive state
                 message = await websocket.recv()
                 game_data = json.loads(message)
+
+                print(game_data)
                 
-                # Run LangGraph decision loop
-                result = app.invoke({"game_data": game_data})
+                # 2. IMPORTANT: Use ainvoke (async invoke)
+                # This prevents the "stuck" behavior
+                result = await app.ainvoke({"game_data": game_data})
+                
+                print(result)
+
                 command = result["decision"]
                 
-                # Send the decision back
+                # 3. Send back
                 await websocket.send(json.dumps({"move": command}))
-                print(f"Agent {game_data['id']} sent command: {command}")
-                
-                # Small delay to prevent API rate limiting
-                await asyncio.sleep(0.1) 
+                print(f"Command: {command}")
+                await asyncio.sleep(0.1)
                 
     except Exception as e:
         print(f"Connection lost: {e}")
+
 
 if __name__ == "__main__":
     asyncio.run(run_agent())

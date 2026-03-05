@@ -43,10 +43,12 @@ func _process(_delta):
 		if state == WebSocketPeer.STATE_OPEN:
 			# Receive commands from Python
 			while socket.get_available_packet_count() > 0:
+				print("Recieved Player Packet")
 				var packet = socket.get_packet().get_string_from_utf8()
 				var data = JSON.parse_string(packet)
 				if data and data.has("move"):
-					player.move_agent(data.move)
+					var character_body = player.get_child(0)
+					character_body.move_agent(data.move)
 			
 			# Send current state back to the specific Python agent
 			var game_state = {
@@ -55,6 +57,7 @@ func _process(_delta):
 				"health": 100
 			}
 			socket.send_text(JSON.stringify(game_state))
+			
 			
 		elif state == WebSocketPeer.STATE_CLOSED:
 			print("Client disconnected. Removing player.")
