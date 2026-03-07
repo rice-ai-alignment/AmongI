@@ -15,3 +15,10 @@ shape = SubResource("CircleShape2D_kpjcp")
 
 [node name="Sprite2D" type="Sprite2D" parent="CharacterBody2D" unique_id=2123072420]
 texture = ExtResource("1_xhfnw")
+
+[node name="Label" type="Label" parent="." unique_id=49091735]
+offset_left = -22.0
+offset_top = -93.0
+offset_right = 18.0
+offset_bottom = -70.0
+text = "Hello"
