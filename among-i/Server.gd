@@ -10,13 +10,10 @@ var port := 8080
 var MIN_TIMESTEP = 3
 var UPDATE_INTERVAL = 3.0 # Send data once per second
 
-var NAMES = ["Bob", "Allen", "Anmol", "Tina"]
 
-
-var CHAT_DISTANCE = 100
+var CHAT_DISTANCE = 10000
 
 func _ready():
-	NAMES.shuffle()
 	if server.listen(port) == OK:
 		print("Server listening for agents on port ", port)
 
@@ -61,6 +58,7 @@ func get_context_packet(client):
 			"y": round(player_node.position.y)
 			},
 		"bots": other_bots,
+		"name": client.name,
 		"chat_logs": client.chat_context.slice(-10)
 	}
 	
@@ -74,7 +72,7 @@ func handle_action(client, response):
 	if response.has("chat"):
 		print("chatted")
 		var char_chat = player_node.get_child(1)
-		char_chat.Text = response.chat
+		char_chat.text = response.chat
 		
 		var chat_string = client.name + ": " + response.chat
 		
@@ -98,14 +96,12 @@ func add_client():
 	add_child(new_player)
 	new_player.position = Vector2(randf_range(100, 500), randf_range(100, 500))
 	
-	var client_name = NAMES.pop_front()
-	
 	# Store both the socket and the player node
 	clients[client_id] = {
 		"id": client_id,
 		"socket": socket, 
 		"node": new_player,
-		"name": client_name,
+		"name": "undefined",
 		"chat_context": [],
 		"time_since_last_update": UPDATE_INTERVAL, # So it imediatly sends update
 		"position": new_player.position
@@ -133,6 +129,9 @@ func update_client(client, _delta):
 			print(data)
 			if not data:
 				continue 
+				
+			if client.name == "undefined":
+				client.name = data["name"]
 				
 			handle_action(client, data)
 			
