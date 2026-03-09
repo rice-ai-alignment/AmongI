@@ -22,3 +22,12 @@ offset_top = -93.0
 offset_right = 18.0
 offset_bottom = -70.0
 text = "Hello"
+horizontal_alignment = 1
+
+[node name="Label2" type="Label" parent="." unique_id=30565550]
+offset_left = -22.0
+offset_top = -113.0
+offset_right = 18.0
+offset_bottom = -90.0
+text = "Hello"
+horizontal_alignment = 1
