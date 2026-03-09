@@ -1,5 +1,7 @@
 import asyncio
 import json
+import glob
+import random
 import os
 import websockets
 from dotenv import load_dotenv
@@ -10,8 +12,6 @@ from langgraph.checkpoint.memory import MemorySaver # This is the "brain" storag
 from pydantic import BaseModel, Field
 from google.genai import errors
 
-from google.genai import types
-from functools import partial
 import openai
 from pydantic import create_model, Field
 # Load variables from .env
@@ -37,6 +37,28 @@ safety_settings={
     "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_ONLY_HIGH",
     "HARM_CATEGORY_HARASSMENT": "BLOCK_LOW_AND_ABOVE",
 }
+
+def load_random_personalities(folder_path: str, count: int):
+    # 1. Find all .txt files in the folder
+    search_pattern = os.path.join(folder_path, "*.txt")
+    all_files = glob.glob(search_pattern)
+    
+    if not all_files:
+        print(f"⚠️ No personality files found in {folder_path}!")
+        return ["You are a generic helpful bot."] # Fallback
+
+    # 2. Pick a random sample (don't exceed the number of files available)
+    num_to_pick = min(count, len(all_files))
+    selected_files = random.sample(all_files, num_to_pick)
+    
+    personalities = []
+    for file_path in selected_files:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            # We use the filename as a label and the content as the prompt
+            content = f.read().strip()
+            personalities.append(content)
+            
+    return personalities
 
 
 def get_action_model(first_time=False):
@@ -161,20 +183,25 @@ def create_chat_prompt_part(chat_logs):
 
 async def think_node(state: AgentState):
     data = state['game_data']
+
+    name_prompt = "Chose a name for other bots to see?" 
+    if not state['first_time']:
+        name_prompt = f"Your chosen name is {data['name']}."
     
     # Construct a prompt based on the specific agent's state
     prompt = (
         f"You are a bot. Your current position is {data['pos']} Wander Around and chat with other bots. "
         f"Here is your personality: {state['personality']}"
-        f"Your name is {data['name']}." if not state['first_time'] else ""
-        "Chat Logs:"
+        f"{name_prompt}"
+        f"Chat Logs:"
         f"{create_chat_prompt_part(data.get('chat_logs', []))}"
-        "Choose a movement: 'up', 'down', 'left', 'right', or 'idle'. "
-        "Respond to others or say something in chat"
+        f"Choose a movement: 'up', 'down', 'left', 'right', or 'idle'. "
+        f"You can also respond to others or say something in chat. Provide your response in a structured format with 'move', 'chat', and 'reason' fields."
     )
     
     print("Invoking LLM with prompt:")
     print(prompt)
+    print()
     # Use the unified LLM interface
     response = await fetch_llm(prompt, first_time=state['first_time'])
 
@@ -233,9 +260,16 @@ async def run_agent(personality):
     except Exception as e:
         print(f"Connection lost: {e}")
 
-personality = (
-        "You are 'Cactus Jack', a rugged cowboy. You only use Western slang. "
-        "You are tough, loyal, and hate 'varmints' (mobs)."
-    )
+async def main():
+    # Load 3 random personalities from your folder
+    persona_folder = "./personas" 
+    personalities = load_random_personalities(persona_folder, count=3)
+
+    # Create tasks for each personality loaded
+    tasks = [run_agent(p) for p in personalities]
+
+    print(f"🚀 Launching {len(tasks)} agents from folder...")
+    await asyncio.gather(*tasks)
+
 if __name__ == "__main__":
-    asyncio.run(run_agent(personality))
+    asyncio.run(main())

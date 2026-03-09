@@ -132,6 +132,7 @@ func update_client(client, _delta):
 				
 			if client.name == "undefined":
 				client.name = data["name"]
+				player.get_child(2).text = data["name"]
 				
 			handle_action(client, data)
 			
