@@ -10,6 +10,7 @@ var port := 8080
 var MIN_TIMESTEP = 3
 var UPDATE_INTERVAL = 3.0 # Send data once per second
 
+var total_bots = 0
 
 var CHAT_DISTANCE = 10000
 
@@ -83,6 +84,7 @@ func handle_action(client, response):
 			
 		
 func add_client():
+	total_bots += 1
 	var conn = server.take_connection()
 	var socket = WebSocketPeer.new()
 	socket.accept_stream(conn)
@@ -95,6 +97,8 @@ func add_client():
 	new_player.name = "Agent_" + str(client_id)
 	add_child(new_player)
 	new_player.position = Vector2(randf_range(100, 500), randf_range(100, 500))
+	
+	new_player.get_child(0).get_child(1).frame_coords = Vector2i(total_bots%7, 0)
 	
 	# Store both the socket and the player node
 	clients[client_id] = {
