@@ -263,7 +263,7 @@ async def run_agent(personality):
 async def main():
     # Load 3 random personalities from your folder
     persona_folder = "./personas" 
-    personalities = load_random_personalities(persona_folder, count=3)
+    personalities = load_random_personalities(persona_folder, count=2)
 
     # Create tasks for each personality loaded
     tasks = [run_agent(p) for p in personalities]
