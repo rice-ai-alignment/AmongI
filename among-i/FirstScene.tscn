@@ -1,6 +1,9 @@
 [gd_scene format=3 uid="uid://bxlemvyn2ipuh"]
 
 [ext_resource type="Script" uid="uid://b6qkw5y4ny4nj" path="res://Server.gd" id="1_klfix"]
+[ext_resource type="PackedScene" path="res://ChatBox.tscn" id="2_chatbox"]
 
 [node name="Node2D" type="Node2D" unique_id=1285183098]
 script = ExtResource("1_klfix")
+
+[node name="ChatBox" parent="." instance=ExtResource("2_chatbox")]

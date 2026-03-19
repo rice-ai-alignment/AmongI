@@ -5,6 +5,22 @@
 
 [sub_resource type="CircleShape2D" id="CircleShape2D_kpjcp"]
 
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_bubble"]
+bg_color = Color(1, 1, 1, 0.95)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.15, 0.15, 0.15, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+content_margin_left = 8.0
+content_margin_top = 5.0
+content_margin_right = 8.0
+content_margin_bottom = 5.0
+
 [node name="Player" type="Node2D" unique_id=1865666525]
 
 [node name="CharacterBody2D" type="CharacterBody2D" parent="." unique_id=462931417]
@@ -19,18 +35,21 @@ hframes = 7
 vframes = 10
 frame = 56
 
-[node name="Label" type="Label" parent="." unique_id=49091735]
-offset_left = -22.0
-offset_top = -93.0
-offset_right = 18.0
-offset_bottom = -70.0
-text = "Hello"
+[node name="SpeechBubble" type="PanelContainer" parent="." unique_id=77340021]
+theme_override_styles/panel = SubResource("StyleBoxFlat_bubble")
+visible = false
+
+[node name="Label" type="Label" parent="SpeechBubble" unique_id=49091735]
+custom_minimum_size = Vector2(160, 0)
+text = ""
 horizontal_alignment = 1
+autowrap_mode = 3
+theme_override_colors/font_color = Color(0, 0, 0, 1)
 
 [node name="Label2" type="Label" parent="." unique_id=30565550]
 offset_left = -22.0
 offset_top = -75.0
 offset_right = 18.0
 offset_bottom = -52.0
-text = "Hello"
+text = ""
 horizontal_alignment = 1

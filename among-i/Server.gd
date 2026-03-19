@@ -2,6 +2,7 @@
 extends Node
 
 @export var player_scene: PackedScene = preload("res://Player.tscn")
+@onready var chat_box = $ChatBox
 
 var server := TCPServer.new()
 var clients := {} # Dictionary to map Peer ID to Player Instance
@@ -13,6 +14,9 @@ var UPDATE_INTERVAL = 3.0 # Send data once per second
 var total_bots = 0
 
 var CHAT_DISTANCE = 10000
+
+# Colors matching the 7 Among Us sprite columns (index 0–6)
+var AGENT_COLORS = ["#C51111", "#132ED2", "#117F2D", "#ED54BB", "#EF7D0E", "#C8CD00", "#3F474E"]
 
 func _ready():
 	if server.listen(port) == OK:
@@ -72,11 +76,16 @@ func handle_action(client, response):
 	
 	if response.has("chat"):
 		print("chatted")
-		var char_chat = player_node.get_child(1)
+		var speech_bubble = player_node.get_child(1)
+		var char_chat = speech_bubble.get_child(0)
 		char_chat.text = response.chat
-		
+		speech_bubble.visible = response.chat != ""
+
 		var chat_string = client.name + ": " + response.chat
-		
+		var color = AGENT_COLORS[client.color_index]
+		var bbcode_msg = "[b][color=%s]%s[/color][/b]: %s" % [color, client.name, response.chat]
+		chat_box.add_message(bbcode_msg)
+
 		for id2 in clients:
 			var client2 = clients[id2]
 			if client_distance(client, client2) <= CHAT_DISTANCE:
@@ -98,14 +107,16 @@ func add_client():
 	add_child(new_player)
 	new_player.position = Vector2(randf_range(100, 500), randf_range(100, 500))
 	
-	new_player.get_child(0).get_child(1).frame_coords = Vector2i(total_bots%7, 0)
-	
+	var color_index = total_bots % 7
+	new_player.get_child(0).get_child(1).frame_coords = Vector2i(color_index, 0)
+
 	# Store both the socket and the player node
 	clients[client_id] = {
 		"id": client_id,
-		"socket": socket, 
+		"socket": socket,
 		"node": new_player,
 		"name": "undefined",
+		"color_index": color_index,
 		"chat_context": [],
 		"time_since_last_update": UPDATE_INTERVAL, # So it imediatly sends update
 		"position": new_player.position
