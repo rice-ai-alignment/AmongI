@@ -1,0 +1,41 @@
+[gd_scene format=3 uid="uid://chat_box_scene"]
+
+[ext_resource type="Script" path="res://ChatBox.gd" id="1_chatbox"]
+
+[node name="ChatBox" type="CanvasLayer"]
+layer = 10
+script = ExtResource("1_chatbox")
+
+[node name="Panel" type="Panel" parent="."]
+anchors_preset = 3
+anchor_left = 0.0
+anchor_top = 1.0
+anchor_right = 0.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = -258.0
+offset_right = 408.0
+offset_bottom = -8.0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="Panel"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 6.0
+offset_top = 6.0
+offset_right = -6.0
+offset_bottom = -6.0
+
+[node name="HeaderLabel" type="Label" parent="Panel/VBoxContainer"]
+text = "Chat Log"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 13
+
+[node name="ScrollContainer" type="ScrollContainer" parent="Panel/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+follow_focus = true
+
+[node name="MessageContainer" type="VBoxContainer" parent="Panel/VBoxContainer/ScrollContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
