@@ -160,18 +160,4 @@ In `AgentControllers/index.py`:
 - `LLM_TIMEOUT = 15` — seconds before an LLM call times out
 - `MODEL_PROVIDER` — set to `"google"` or `"openai"` in `.env`
 
-## Open Issues
-
-See the [GitHub Issues](../../issues) tab for current bugs and feature requests, including:
-- Camera focus bug when screen scrolls
-- Adding timestamps to chat messages
-- Agent-side and Godot-side logging
-- Abstracting the server script into a reusable module
-
-## Contributing
-
-1. Fork the repo and create a branch for your feature/fix
-2. Make your changes
-3. Open a pull request describing what you changed and why
-
 This project is maintained by [Rice AI Alignment](https://github.com/rice-ai-alignment). MIT License.
