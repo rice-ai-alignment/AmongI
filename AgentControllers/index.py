@@ -87,7 +87,10 @@ uri = "ws://localhost:8080"
 
 
 if MODEL_PROVIDER == "openai":
-    client = openai.OpenAI(api_key=OPENAI_API_KEY) 
+    client = openai.OpenAI(
+    api_key=OPENAI_API_KEY,
+    base_url="https://openrouter.ai/api/v1",
+) 
 
 elif MODEL_PROVIDER == "google":
     # Initialize Gemini (Flash is recommended for fast game response times)
