@@ -84,7 +84,7 @@ func handle_action(client, response):
 		var chat_string = client.name + ": " + response.chat
 		var color = AGENT_COLORS[client.color_index]
 		var bbcode_msg = "[b][color=%s]%s[/color][/b]: %s" % [color, client.name, response.chat]
-		chat_box.add_message(bbcode_msg)
+		chat_box.add_message(bbcode_msg, chat_string)
 
 		for id2 in clients:
 			var client2 = clients[id2]
@@ -178,5 +178,3 @@ func _process(_delta):
 	# 2. Update all connected clients
 	for id in clients.keys():
 		update_client(clients[id], _delta)
-	
-		
