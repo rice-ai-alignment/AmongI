@@ -6,11 +6,8 @@ import os
 import websockets
 from dotenv import load_dotenv
 from typing import TypedDict
-from langgraph.graph import StateGraph, START, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.checkpoint.memory import MemorySaver # This is the "brain" storage
 from pydantic import BaseModel, Field
-from google.genai import errors
 
 import openai
 from pydantic import create_model, Field
@@ -193,7 +190,7 @@ async def think_node(state: AgentState):
     
     # Construct a prompt based on the specific agent's state
     prompt = (
-        f"You are a bot. Your current position is {data['pos']} Wander Around and chat with other bots. "
+        f"You are a bot. Wander Around and chat with other bots. "
         f"Here is your personality: {state['personality']}"
         f"{name_prompt}"
         f"Chat Logs:"
@@ -209,13 +206,6 @@ async def think_node(state: AgentState):
     response = await fetch_llm(prompt, first_time=state['first_time'])
 
     return {"decision": response}
-
-# Build the LangGraph
-workflow = StateGraph(AgentState)
-workflow.add_node("think", think_node)
-workflow.add_edge(START, "think")
-workflow.add_edge("think", END)
-app = workflow.compile()
 
 # 2. WebSocket Communication
 async def run_agent(personality):
@@ -246,7 +236,7 @@ async def run_agent(personality):
                     "first_time": first_time
                 }
 
-                raw_workflow_resp = await app.ainvoke(input_state)
+                raw_workflow_resp = await think_node(input_state)
 
                 decision = raw_workflow_resp.get("decision", {})
                 print(f"LLM Decision: {decision}")
