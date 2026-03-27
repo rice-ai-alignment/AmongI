@@ -2,6 +2,7 @@
 extends Node
 
 @export var player_scene: PackedScene = preload("res://Player.tscn")
+@export var tile_map: TileMapLayer
 @onready var chat_box = $ChatBox
 
 var server := TCPServer.new()
@@ -48,12 +49,16 @@ func compress_chat_context(chat_context):
 func get_context_packet(client):
 	var id = client.id
 	var player_node = client.node
+	var visibility_radius = 2 # Adjust this for a 5x5 grid (2*2 + 1)
+	
+	# 1. Fetch the tile neighborhood
+	# Assuming 'tile_map' is accessible globally or on the server node
+	var neighborhood = get_tile_neighborhood(player_node.global_position, visibility_radius)
 	
 	var other_bots = []
 	for id2 in clients.keys():
 		if id2 == id:
 			continue
-
 		other_bots.append(get_relative_client_data(client, clients[id2]))
 	
 	return {
@@ -61,11 +66,43 @@ func get_context_packet(client):
 		"pos": {
 			"x": round(player_node.position.x), 
 			"y": round(player_node.position.y)
-			},
+		},
 		"bots": other_bots,
+		"world_view": neighborhood, # The new 2D array of tile data
 		"name": client.name,
 		"chat_logs": client.chat_context.slice(-10)
 	}
+
+## Helper to build the JSON-friendly 2D array
+func get_tile_neighborhood(world_pos: Vector2, radius: int) -> Array:
+	var center_tile = tile_map.local_to_map(tile_map.to_local(world_pos))
+	var grid = []
+	
+	for y in range(-radius, radius + 1):
+		var row = []
+		for x in range(-radius, radius + 1):
+			var target_coords = center_tile + Vector2i(x, y)
+			var data = tile_map.get_cell_tile_data(target_coords)
+			var atlas_pos = tile_map.get_cell_atlas_coords(target_coords)
+			
+			# We build a dictionary that Python can easily parse
+			var tile_info = {
+				"x": target_coords.x,
+				"y": target_coords.y,
+				"type": "empty",
+				"walkable": false
+			}
+			
+			if tile_map.get_cell_source_id(target_coords) != -1:
+				tile_info["type"] = str(atlas_pos) # e.g. "(1, 2)"
+				if data:
+					# Pull whatever custom data your Python bot needs to know
+					tile_info["walkable"] = data.get_custom_data("walkable")
+			
+			row.append(tile_info)
+		grid.append(row)
+		
+	return grid
 	
 func handle_action(client, response):
 	var player_node = client.node
