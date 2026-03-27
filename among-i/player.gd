@@ -5,14 +5,51 @@ var speed = 200
 
 @onready var speech_bubble = get_parent().get_node("SpeechBubble")
 
-func move_agent(direction: String):
-	velocity = Vector2.ZERO
-	if direction == "left": velocity.x = -speed
-	elif direction == "right": velocity.x = speed
-	elif direction == "up": velocity.y = -speed
-	elif direction == "down": velocity.y = speed
+@export var tile_map: TileMapLayer  # Drag your TileMapLayer here in the Inspector
+@export var move_speed: float = 0.2 # Time in seconds to move one tile
+
+var is_moving: bool = false
+
+## Call this function to move the player to a specific tile coordinate (e.g., Vector2i(5, 3))
+func move_to_tile(target_tile_coords: Vector2i):
+	if is_moving:
+		return # Prevent starting a new move while already in motion
 	
-	move_and_slide()
+	# 1. Check if the tile is actually walkable (optional but recommended)
+	if not _is_tile_walkable(target_tile_coords):
+		print("Target tile is blocked!")
+		return
+
+	# 2. Convert the Tile Coordinates (1, 1) to World Position (16, 16)
+	# map_to_local returns the center of the tile
+	var target_world_position = tile_map.map_to_local(target_tile_coords)
+	
+	# 3. Use a Tween to animate the movement
+	is_moving = true
+	var tween = create_tween()
+	
+	# Set transition to SINE and ease to IN_OUT for a polished "slide" feel
+	tween.set_trans(Tween.TRANS_SINE)
+	tween.set_ease(Tween.EASE_IN_OUT)
+	
+	tween.tween_property(self, "global_position", target_world_position, move_speed)
+	
+	# 4. Reset the moving flag when finished
+	tween.finished.connect(func(): is_moving = false)
+
+## Helper to check custom data or if the tile exists
+func _is_tile_walkable(coords: Vector2i) -> bool:
+	var data = tile_map.get_cell_tile_data(coords)
+	if data == null: 
+		return false # No tile there
+	
+	# Assumes you have a Custom Data Layer named "walkable" in your TileSet
+	return data.get_custom_data("walkable")
+	
+func _ready():
+	# Snap to the nearest tile center immediately
+	var current_tile = tile_map.local_to_map(global_position)
+	global_position = tile_map.map_to_local(current_tile)
 
 func _process(_delta):
 	if speech_bubble != null and speech_bubble.visible:

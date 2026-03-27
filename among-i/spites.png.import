@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://353ytjuinv8h"
-path="res://.godot/imported/AmongUsSprites.jpg-ec467ab43197c8daffe6d2ba91b74df5.ctex"
+uid="uid://dj4e4hpwb2wg7"
+path="res://.godot/imported/spites.png-0bb68df9b60d19d0202095fbb0334005.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://AmongUsSprites.jpg"
-dest_files=["res://.godot/imported/AmongUsSprites.jpg-ec467ab43197c8daffe6d2ba91b74df5.ctex"]
+source_file="res://spites.png"
+dest_files=["res://.godot/imported/spites.png-0bb68df9b60d19d0202095fbb0334005.ctex"]
 
 [params]
 

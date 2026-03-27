@@ -1,4 +1,24 @@
 {
-    "name": "NAME",
-    "my_messages": []
+  "id": 102,
+  "name": "Bot_Alpha",
+  "pos": {
+    "x": 160,
+    "y": 320
+  },
+  "chat_logs": [
+    "Bot_Beta: Hello there!",
+    "System: A door has opened."
+  ],
+  "bots": [
+    {
+      "name": "Bot_Beta",
+      "relative_pos": {"x": 2, "y": 0},
+      "last_message": "Hello there!"
+    }
+  ],
+  "world_view": [
+    [{"walkable": false, "x": 9, "y": 19}, {"walkable": false, "x": 10, "y": 19}, {"walkable": false, "x": 11, "y": 19}],
+    [{"walkable": true,  "x": 9, "y": 20}, {"walkable": true,  "x": 10, "y": 20}, {"walkable": true,  "x": 11, "y": 20}],
+    [{"walkable": true,  "x": 9, "y": 21}, {"walkable": true,  "x": 10, "y": 21}, {"walkable": true,  "x": 11, "y": 21}]
+  ]
 }

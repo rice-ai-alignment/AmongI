@@ -8,32 +8,21 @@ from dotenv import load_dotenv
 from typing import TypedDict
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
+from langchain_openai import ChatOpenAI
+from openai import OpenAI
 
-import openai
 from pydantic import create_model, Field
 # Load variables from .env
 load_dotenv()
 
 # Load example response for shaping prompts and coercion
 EXAMPLE_PATH = os.path.join(os.path.dirname(__file__), "example_response.json")
-try:
-    with open(EXAMPLE_PATH, "r", encoding="utf-8") as _f:
-        EXAMPLE_RESPONSE = json.load(_f)
-except Exception:
-    EXAMPLE_RESPONSE = {"move": "idle", "chat": "", "reason": ""}
+
+EXAMPLE_RESPONSE = {"move": "idle", "chat": "", "reason": ""}
 
 # Model provider switch: 'google' (default) or 'openai'
-MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "google").strip().lower()
-# OpenAI settings (used only when MODEL_PROVIDER=openai)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-# Timeout (seconds) for external LLM calls to avoid hanging forever
+MODEL = os.getenv("MODEL", "google").strip().lower()
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "15"))
-
-safety_settings={
-    "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_ONLY_HIGH",
-    "HARM_CATEGORY_HARASSMENT": "BLOCK_LOW_AND_ABOVE",
-}
 
 def load_random_personalities(folder_path: str, count: int):
     # 1. Find all .txt files in the folder
@@ -41,7 +30,7 @@ def load_random_personalities(folder_path: str, count: int):
     all_files = glob.glob(search_pattern)
     
     if not all_files:
-        print(f"⚠️ No personality files found in {folder_path}!")
+        print(f"No personality files found in {folder_path}!")
         return ["You are a generic helpful bot."] # Fallback
 
     # 2. Pick a random sample (don't exceed the number of files available)
@@ -57,11 +46,57 @@ def load_random_personalities(folder_path: str, count: int):
             
     return personalities
 
+def render_ascii_grid(packet):
+    # 1. Extract the world_view from the packet
+    # The world_view is a 2D list: [rows][columns]
+    grid_data = packet.get("world_view", [])
+    
+    if not grid_data:
+        print("No world data found in packet.")
+        return
+
+    # 2. Define our character mapping
+    # Adjust 'type' strings to match your Godot Atlas Coords or Custom Data
+    mapping = {
+        "walkable": ".",    # Ground
+        "blocked": "#",     # Wall
+        "player": "@",      # The bot itself
+        "other_bot": "B"    # Other entities
+    }
+
+    # 3. Determine the center of the grid (where the player is)
+    grid_height = len(grid_data)
+    grid_width = len(grid_data[0]) if grid_height > 0 else 0
+    center_y = grid_height // 2
+    center_x = grid_width // 2
+
+    print(f"\n--- Local Map View (Radius: {grid_height//2}) ---")
+    
+    ascii_rows = []
+    for y in range(grid_height):
+        line = ""
+        for x in range(grid_width):
+            tile = grid_data[y][x]
+            
+            # Logic to determine which character to print
+            char = mapping["blocked"]
+            
+            if x == center_x and y == center_y:
+                char = mapping["player"]
+            elif tile.get("walkable"):
+                char = mapping["walkable"]
+            
+            # Optional: Check if an 'other_bot' is on this specific tile
+            # (Requires checking tile['x'] and tile['y'] against packet['bots'])
+            
+            line += char + " " # Space for better square-ish aspect ratio
+        ascii_rows.append(line)
 
 def get_action_model(first_time=False):
     # Base fields every action has
     fields = {
-        "move": (str, Field(description="The direction to move: 'up', 'down', 'left', 'right', or 'idle'.")),
+        "move_x": (int, Field(description="How many steps to move horizontally: -1 for left, 0 for idle, 1 for right.")),
+        "move_y": (int, Field(description="How many steps to move vertically: -1 for up, 0 for idle, 1 for down.")),
         "chat": (str, Field(description="Chat message.")),
         "reason": (str, Field(description="Logic behind the move."))
     }
@@ -83,94 +118,10 @@ class AgentState(TypedDict):
 uri = "ws://localhost:8080"
 
 
-if MODEL_PROVIDER == "openai":
-    client = openai.OpenAI(
-    api_key=OPENAI_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
-) 
-
-elif MODEL_PROVIDER == "google":
-    # Initialize Gemini (Flash is recommended for fast game response times)
-    gemini_llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
-        temperature=0.2, # Lower temperature = more consistent game commands,
-        # safety_settings=safety_settings,
+client = OpenAI(
+  base_url="https://openrouter.ai/api/v1",
+  api_key=os.getenv("OPENROUTER_API_KEY")
 )
-    gemini_structured_llm_first = gemini_llm.with_structured_output(get_action_model(True))
-    gemini_structured_llm = gemini_llm.with_structured_output(get_action_model(False))
-
-
-async def _call_google(prompt: str, first_time=False):
-    """Call the Google structured LLM (sync or async) and return its raw response.
-
-    Returns whatever the structured LLM returns (could be an object with attributes
-    or a dict). Exceptions are propagated to the caller.
-    """
-    print("[LLM] calling Google provider...")
-    if first_time:
-        return await gemini_structured_llm_first.ainvoke(prompt)
-    else:
-        return await gemini_structured_llm.ainvoke(prompt)
-        #     return await loop.run_in_executor(None, gemini_structured_llm.invoke, prompt)
-
-async def _call_openai(prompt: str, first_time):
-    """Call OpenAI (sync client wrapped in executor) and return the assistant text.
-
-    This function normalizes the various OpenAI response shapes into a single
-    string (or None). It will raise if the openai package is not available.
-    """
-    if openai is None:
-        raise RuntimeError("openai package is not installed")
-
-    messages = [{"role": "user", "content": prompt}]
-    loop = asyncio.get_running_loop()
-
-    def _sync_call_new_client():
-        # new-style chat completions
-        return client.chat.completions.parse(
-            model=OPENAI_MODEL, 
-            messages=messages, 
-            temperature=0.2, 
-            response_format=get_action_model(first_time)
-            )
-
-    print("[LLM] calling OpenAI provider (new interface)...")
-    resp = await loop.run_in_executor(None, _sync_call_new_client)
-
-    # print(f"[LLM] OpenAI response: {resp}")
-
-    if not resp:
-        return None
-
-    if not hasattr(resp.choices[0].message, "parsed"):
-        print("⚠️ OpenAI response missing 'parsed' content, cannot extract command.")
-        return None
-    
-    command = resp.choices[0].message.parsed.model_dump()
-
-    return command
-
-
-async def fetch_llm(prompt: str, first_time=False):
-    """Unified entrypoint to call the configured LLM provider.
-
-    Returns provider-specific response (object, dict, or string). Any errors are
-    caught and logged; function returns None on failure.
-    """
-    try:
-        print(f"[LLM] provider={MODEL_PROVIDER}, timeout={LLM_TIMEOUT}s")
-        if MODEL_PROVIDER == "openai":
-            return await asyncio.wait_for(_call_openai(prompt, first_time), timeout=LLM_TIMEOUT)
-        else:
-            return await asyncio.wait_for(_call_google(prompt, first_time), timeout=LLM_TIMEOUT)
-    except asyncio.TimeoutError:
-        print(f"⚠️ LLM call timed out after {LLM_TIMEOUT}s (provider={MODEL_PROVIDER})")
-        return None
-    except Exception as e:
-        # Keep logs concise but informative for debugging
-        print(f"⚠️ LLM call failed (provider={MODEL_PROVIDER}): {e}")
-        return None
 
 def create_chat_prompt_part(chat_logs):
     if not chat_logs:
@@ -180,6 +131,7 @@ def create_chat_prompt_part(chat_logs):
     for log in chat_logs[-5:]:  # Include up to the last 5 messages
         prompt_part += f"- {log}\n"
     return prompt_part
+
 
 async def think_node(state: AgentState):
     data = state['game_data']
@@ -193,17 +145,57 @@ async def think_node(state: AgentState):
         f"You are a bot. Wander Around and chat with other bots. "
         f"Here is your personality: {state['personality']}"
         f"{name_prompt}"
-        f"Chat Logs:"
-        f"{create_chat_prompt_part(data.get('chat_logs', []))}"
         f"Choose a movement: 'up', 'down', 'left', 'right', or 'idle'. "
         f"You can also respond to others or say something in chat. Provide your response in a structured format with 'move', 'chat', and 'reason' fields."
+        f"You are a 2D grid explorer. Your surroundings are represented by an ASCII grid where:"
+        f"@ is You (always the center)."
+        f". is Walkable ground."
+        f"# is a Wall or obstacle."
     )
     
     print("Invoking LLM with prompt:")
     print(prompt)
     print()
+
+    game_data_promt = (
+
+        f"Your current local map view is:\n"
+        f"{render_ascii_grid(data)}\n"
+        f"{create_chat_prompt_part(data.get('chat_logs', []))}"
+    )
+
+    # Game Context
+    state["game_data"]["messages"] += {
+        "role": "system",
+        "content": prompt
+    }
+
+    DynamicAction = get_action_model(first_time=state["first_time"])
+    completion = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": prompt
+            },
+            *state["game_data"].get("messages", [])[-10:],  # Include up to the last 5 messages in the conversation history
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "agent_action",
+                "schema": DynamicAction.model_json_schema(),
+                "strict": True
+            }
+        }
+    )
+
     # Use the unified LLM interface
-    response = await fetch_llm(prompt, first_time=state['first_time'])
+    response = DynamicAction.model_validate_json(completion.choices[0].message.content)
+
+    state["game_data"]["messages"].append({
+        "role": "assistant",
+        "content": response.model_dump_json()    })
 
     return {"decision": response}
 
@@ -233,7 +225,7 @@ async def run_agent(personality):
                     "game_data": game_data,
                     "decision": {},
                     "personality": personality,
-                    "first_time": first_time
+                    "first_time": first_time,
                 }
 
                 raw_workflow_resp = await think_node(input_state)
@@ -242,7 +234,7 @@ async def run_agent(personality):
                 print(f"LLM Decision: {decision}")
                 print()
 
-                # print(f"payload to send: {payload}")
+                print(f"payload to send: {decision}")
 
                 # 3. Send back
                 await websocket.send(json.dumps(decision))
@@ -266,3 +258,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
