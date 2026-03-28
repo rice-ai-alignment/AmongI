@@ -7,7 +7,7 @@ import websockets
 from dotenv import load_dotenv
 from typing import TypedDict
 from langchain_google_genai import ChatGoogleGenerativeAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
@@ -69,10 +69,8 @@ def render_ascii_grid(packet):
     grid_width = len(grid_data[0]) if grid_height > 0 else 0
     center_y = grid_height // 2
     center_x = grid_width // 2
-
-    print(f"\n--- Local Map View (Radius: {grid_height//2}) ---")
     
-    ascii_rows = []
+    string = ""
     for y in range(grid_height):
         line = ""
         for x in range(grid_width):
@@ -90,10 +88,22 @@ def render_ascii_grid(packet):
             # (Requires checking tile['x'] and tile['y'] against packet['bots'])
             
             line += char + " " # Space for better square-ish aspect ratio
-        ascii_rows.append(line)
+        string += line + "\n"
+    return string
+
+def make_strict(schema):
+    if isinstance(schema, dict):
+        if schema.get("type") == "object":
+            schema["additionalProperties"] = False
+        for value in schema.values():
+            make_strict(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            make_strict(item)
 
 def get_action_model(first_time=False):
     # Base fields every action has
+    config = ConfigDict(extra='forbid')
     fields = {
         "move_x": (int, Field(description="How many steps to move horizontally: -1 for left, 0 for idle, 1 for right.")),
         "move_y": (int, Field(description="How many steps to move vertically: -1 for up, 0 for idle, 1 for down.")),
@@ -105,8 +115,17 @@ def get_action_model(first_time=False):
     if first_time:
         fields["name"] = (str, Field(description="What is your name"))
 
+    
+
     # Generate a new Pydantic class dynamically
-    return create_model("DynamicAgentAction", **fields)
+    model = create_model(
+        "DynamicAgentAction", 
+        __config__=config, 
+        **fields
+    )
+    # Make the JSON schema strict (no extra fields allowed)
+    make_strict(model.model_json_schema())
+    return model
 
 # 1. Define the AI's "Brain" State
 class AgentState(TypedDict):
@@ -114,14 +133,21 @@ class AgentState(TypedDict):
     decision: dict
     personality: str
     first_time: bool
+    messages: list
 
 uri = "ws://localhost:8080"
 
 
+# client = OpenAI(
+#   base_url="https://openrouter.ai/api/v1",
+#   api_key=os.getenv("OPENROUTER_API_KEY")
+# )
+
 client = OpenAI(
-  base_url="https://openrouter.ai/api/v1",
-  api_key=os.getenv("OPENROUTER_API_KEY")
+#   base_url="https://openrouter.ai/api/v1",
+  api_key=os.getenv("OPENAI_API_KEY")
 )
+
 
 def create_chat_prompt_part(chat_logs):
     if not chat_logs:
@@ -152,25 +178,27 @@ async def think_node(state: AgentState):
         f". is Walkable ground."
         f"# is a Wall or obstacle."
     )
-    
-    print("Invoking LLM with prompt:")
-    print(prompt)
-    print()
+
+    ascii_grid = render_ascii_grid(data)
+
+    print(f"ASCII Grid:\n{ascii_grid}"  )
 
     game_data_promt = (
 
         f"Your current local map view is:\n"
-        f"{render_ascii_grid(data)}\n"
-        f"{create_chat_prompt_part(data.get('chat_logs', []))}"
+        f"{ascii_grid}\n"
     )
 
     # Game Context
-    state["game_data"]["messages"] += {
+    state["messages"].append({
         "role": "system",
-        "content": prompt
-    }
+        "content": game_data_promt
+    })
 
     DynamicAction = get_action_model(first_time=state["first_time"])
+
+    print("Sending request to LLM...")
+
     completion = client.chat.completions.create(
         model=MODEL,
         messages=[
@@ -178,7 +206,7 @@ async def think_node(state: AgentState):
                 "role": "system",
                 "content": prompt
             },
-            *state["game_data"].get("messages", [])[-10:],  # Include up to the last 5 messages in the conversation history
+            *state["messages"][-10:],  # Include up to the last 5 messages in the conversation history
         ],
         response_format={
             "type": "json_schema",
@@ -192,12 +220,14 @@ async def think_node(state: AgentState):
 
     # Use the unified LLM interface
     response = DynamicAction.model_validate_json(completion.choices[0].message.content)
+    json_response = response.model_dump_json()
 
-    state["game_data"]["messages"].append({
+    state["messages"].append({
         "role": "assistant",
-        "content": response.model_dump_json()    })
+        "content": json_response
+    })
 
-    return {"decision": response}
+    return {"decision": json.loads(json_response)}
 
 # 2. WebSocket Communication
 async def run_agent(personality):
@@ -214,8 +244,8 @@ async def run_agent(personality):
                 message = await websocket.recv()
                 game_data = json.loads(message)
 
-                print(f"game_data: {game_data}")
-                print()
+                # print(f"game_data: {game_data}")
+                # print()
                 
                 # 2. Call the full workflow, then extract the node output.
                 # This preserves multi-node workflows while ensuring we only send
@@ -226,15 +256,21 @@ async def run_agent(personality):
                     "decision": {},
                     "personality": personality,
                     "first_time": first_time,
+                    "messages": []
                 }
 
-                raw_workflow_resp = await think_node(input_state)
+                try:
+                    print("Processing state through LLM workflow...")
+
+                    raw_workflow_resp = await think_node(input_state)
+                except Exception as e:
+                    print(f"Error during LLM processing: {e}")
+                    break
+                    # raw_workflow_resp = {"decision": {"move_x": 0, "move_y": 0, "chat": "", "reason": "LLM processing failed, defaulting to idle."}}
 
                 decision = raw_workflow_resp.get("decision", {})
-                print(f"LLM Decision: {decision}")
-                print()
 
-                print(f"payload to send: {decision}")
+                print(f"LLM Decision: {decision}")
 
                 # 3. Send back
                 await websocket.send(json.dumps(decision))
@@ -248,7 +284,7 @@ async def run_agent(personality):
 async def main():
     # Load 3 random personalities from your folder
     persona_folder = "./personas" 
-    personalities = load_random_personalities(persona_folder, count=2)
+    personalities = load_random_personalities(persona_folder, count=1)
 
     # Create tasks for each personality loaded
     tasks = [run_agent(p) for p in personalities]

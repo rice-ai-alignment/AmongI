@@ -35,25 +35,14 @@ func get_relative_client_data(client, client2):
 		"angle":  client_pos.angle_to(client2_pos)
 	}
 	
-func compress_chat_context(chat_context):
-	# Ensure the array has at least 10 elements.
-		# If the array has fewer than 10, it will return the entire array.
-	if chat_context.size() <= 10:
-		return chat_context.duplicate() # Return a copy of the whole array.
-	#else:
-		# Use slicing from the 10th-to-last element to the end.
-		# The syntax [start_index:end_index] creates a new array.
-		# Omitting the end_index goes to the end of the array.
-		#return chat_context[-10:]
-	
 func get_context_packet(client):
 	var id = client.id
 	var player_node = client.node
-	var visibility_radius = 2 # Adjust this for a 5x5 grid (2*2 + 1)
+	var visibility_radius = 4 # Adjust this for a 5x5 grid (2*2 + 1)
 	
 	# 1. Fetch the tile neighborhood
 	# Assuming 'tile_map' is accessible globally or on the server node
-	var neighborhood = get_tile_neighborhood(player_node.global_position, visibility_radius)
+	var neighborhood = get_tile_neighborhood(client.tile, visibility_radius)
 	
 	var other_bots = []
 	for id2 in clients.keys():
@@ -70,12 +59,13 @@ func get_context_packet(client):
 		"bots": other_bots,
 		"world_view": neighborhood, # The new 2D array of tile data
 		"name": client.name,
-		"chat_logs": client.chat_context.slice(-10)
+		"chat_logs": client.chat_context
 	}
+	
+	client.chat_context = []
 
 ## Helper to build the JSON-friendly 2D array
-func get_tile_neighborhood(world_pos: Vector2, radius: int) -> Array:
-	var center_tile = tile_map.local_to_map(tile_map.to_local(world_pos))
+func get_tile_neighborhood(center_tile: Vector2i, radius: int) -> Array:
 	var grid = []
 	
 	for y in range(-radius, radius + 1):
@@ -106,14 +96,14 @@ func get_tile_neighborhood(world_pos: Vector2, radius: int) -> Array:
 	
 func handle_action(client, response):
 	var player_node = client.node
-	if response.has("move"):
+	if response.has("move_x") and response.has("move_y"):
 		print("Moved")
-		var character_body = player_node.get_child(0)
-		character_body.move_agent(response.move)
+		client.tile += Vector2i(response.move_x, response.move_y)
+		player_node.move_to_tile(client.tile)
 	
 	if response.has("chat"):
 		print("chatted")
-		var speech_bubble = player_node.get_child(1)
+		var speech_bubble = player_node.get_node("SpeechBubble")
 		var char_chat = speech_bubble.get_child(0)
 		char_chat.text = response.chat
 		speech_bubble.visible = response.chat != ""
@@ -141,11 +131,12 @@ func add_client():
 	# Spawn a new player instance
 	var new_player = player_scene.instantiate()
 	new_player.name = "Agent_" + str(client_id)
+	new_player.tile_map = tile_map
 	add_child(new_player)
 	new_player.position = Vector2(randf_range(100, 500), randf_range(100, 500))
 	
 	var color_index = total_bots % 7
-	new_player.get_child(0).get_child(1).frame_coords = Vector2i(color_index, 0)
+	new_player.get_node("Sprite2D").frame_coords = Vector2i(color_index, 0)
 
 	# Store both the socket and the player node
 	clients[client_id] = {
@@ -155,6 +146,7 @@ func add_client():
 		"name": "undefined",
 		"color_index": color_index,
 		"chat_context": [],
+		"tile": Vector2i(0,0),
 		"time_since_last_update": UPDATE_INTERVAL, # So it imediatly sends update
 		"position": new_player.position
 		}
@@ -177,14 +169,13 @@ func update_client(client, _delta):
 			print("Recieved Player Packet")
 			var packet = socket.get_packet().get_string_from_utf8()
 			var data = JSON.parse_string(packet)
-			print(packet)
 			print(data)
 			if not data:
 				continue 
 				
 			if client.name == "undefined":
-				client.name = data["name"]
-				player.get_child(2).text = data["name"]
+				client.name = data.get("name", "UnknownBot")
+				player.get_node("NameLabel").text = client.name
 				
 			handle_action(client, data)
 			
