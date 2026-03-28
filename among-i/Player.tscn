@@ -3,8 +3,6 @@
 [ext_resource type="Script" uid="uid://bkh08vffn1f7e" path="res://player.gd" id="1_kpjcp"]
 [ext_resource type="Texture2D" uid="uid://dj4e4hpwb2wg7" path="res://spites.png" id="2_kpjcp"]
 
-[sub_resource type="CircleShape2D" id="CircleShape2D_kpjcp"]
-
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_bubble"]
 content_margin_left = 8.0
 content_margin_top = 5.0
@@ -21,19 +19,10 @@ corner_radius_top_right = 6
 corner_radius_bottom_right = 6
 corner_radius_bottom_left = 6
 
-[node name="Player" type="Node2D" unique_id=1865666525]
+[sub_resource type="CircleShape2D" id="CircleShape2D_kpjcp"]
 
-[node name="CharacterBody2D" type="CharacterBody2D" parent="." unique_id=462931417]
+[node name="Player" type="CharacterBody2D" unique_id=955156877]
 script = ExtResource("1_kpjcp")
-
-[node name="CollisionShape2D" type="CollisionShape2D" parent="CharacterBody2D" unique_id=1679472439]
-shape = SubResource("CircleShape2D_kpjcp")
-
-[node name="Sprite2D" type="Sprite2D" parent="CharacterBody2D" unique_id=2123072420]
-texture = ExtResource("2_kpjcp")
-hframes = 7
-vframes = 10
-frame = 56
 
 [node name="SpeechBubble" type="PanelContainer" parent="." unique_id=77340021]
 visible = false
@@ -46,9 +35,18 @@ theme_override_colors/font_color = Color(0, 0, 0, 1)
 horizontal_alignment = 1
 autowrap_mode = 3
 
-[node name="Label2" type="Label" parent="." unique_id=30565550]
+[node name="NameLabel" type="Label" parent="." unique_id=30565550]
 offset_left = -22.0
 offset_top = -75.0
 offset_right = 18.0
 offset_bottom = -52.0
 horizontal_alignment = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=1679472439]
+shape = SubResource("CircleShape2D_kpjcp")
+
+[node name="Sprite2D" type="Sprite2D" parent="." unique_id=2123072420]
+scale = Vector2(4, 4)
+texture = ExtResource("2_kpjcp")
+hframes = 7
+vframes = 10

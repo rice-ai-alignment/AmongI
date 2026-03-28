@@ -114,6 +114,6 @@ texture_region_size = Vector2i(320, 320)
 
 [resource]
 tile_size = Vector2i(320, 320)
-custom_data_layer_0/name = "Walkable"
+custom_data_layer_0/name = "walkable"
 custom_data_layer_0/type = 1
 sources/0 = SubResource("TileSetAtlasSource_bt0c5")
