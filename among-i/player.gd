@@ -6,46 +6,64 @@ var speed = 200
 @onready var speech_bubble = get_node("SpeechBubble")
 
 @export var tile_map: TileMapLayer  # Drag your TileMapLayer here in the Inspector
-@export var move_speed: float = 0.2 # Time in seconds to move one tile
+@export var move_speed: float = .8 # Time in seconds to move one tile
 
 var is_moving: bool = false
 
 var tile: Vector2i
 
 ## Call this function to move the player to a specific tile coordinate (e.g., Vector2i(5, 3))
+# Assumes you have an AnimationPlayer node as a child of the Player
+
+# Increase this number to move slower (e.g., 0.8 seconds per tile instead of 0.2)
+
+@export var walk_row: int = 1        # The Y-coordinate in your SpriteSheet for walking
+@export var idle_row: int = 0        # The Y-coordinate in your SpriteSheet for idle
+@export var frame_count: int = 4     # How many frames are in your walking animation loop
+
 func move_to_tile(target_tile_coords: Vector2i):
 	if is_moving:
-		return # Prevent starting a new move while already in motion
+		return false
 		
-	var cords: Vector2i = target_tile_coords
-	
-	# 1. Check if the tile is actually walkable (optional but recommended)
-	if not _is_tile_walkable(cords):
-		print("Target tile is blocked!")
-		#return
+	var sprite = get_node("Sprite2D")
 		
-	tile = cords
-	
-	#cords = Vector2i(0,0)
+	if not _is_tile_walkable(target_tile_coords):
+		return false
 
-	# 2. Convert the Tile Coordinates (1, 1) to World Position (16, 16)
-	# map_to_local returns the center of the tile
-	var target_world_position = tile_map.map_to_local(cords) + Vector2(100,-80)
+	var target_world_position = tile_map.map_to_local(target_tile_coords) + Vector2(100, -80)
 	
-	print(target_world_position)
-	
-	# 3. Use a Tween to animate the movement
 	is_moving = true
 	var tween = create_tween()
 	
-	# Set transition to SINE and ease to IN_OUT for a polished "slide" feel
-	tween.set_trans(Tween.TRANS_SINE)
-	tween.set_ease(Tween.EASE_IN_OUT)
+	# 1. Flip Sprite based on direction
+	#if target_world_position.x != global_position.x:
+		#sprite.flip_h = target_world_position.x < global_position.x
+
+	# 2. Parallel Tween: Move Body + Animate Frames
+	tween.set_parallel(true)
 	
-	tween.tween_property(self, "global_position", target_world_position, move_speed)
+	# A. The actual movement
+	tween.tween_property(self, "global_position", target_world_position, move_speed)\
+		.set_trans(Tween.TRANS_LINEAR)\
+		.set_ease(Tween.EASE_IN_OUT)
 	
-	# 4. Reset the moving flag when finished
-	tween.finished.connect(func(): is_moving = false)
+	# B. The Frame Animation
+	# We animate the 'x' of frame_coords from 0 to the last frame
+	sprite.frame_coords.y = walk_row # Switch to the walking row
+	var frame_tween = create_tween()
+	frame_tween.set_loops(2) # Repeat the walk cycle twice during the slow move
+	frame_tween.set_trans(Tween.TRANS_LINEAR)
+	frame_tween.tween_property(sprite, "frame_coords:y", frame_count - 1, move_speed / 2.0)\
+		.from(0) # Start at frame 0
+	
+	# 3. Reset to Idle when done
+	frame_tween.finished.connect(func():
+		is_moving = false
+		sprite.frame_coords.y = idle_row
+		#sprite.frame_coords.x = 0
+	)
+	
+	return true
 
 ## Helper to check custom data or if the tile exists
 func _is_tile_walkable(coords: Vector2i) -> bool:

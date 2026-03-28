@@ -50,19 +50,22 @@ func get_context_packet(client):
 			continue
 		other_bots.append(get_relative_client_data(client, clients[id2]))
 	
+	var chat_context = client.chat_context 
+	client.chat_context = []
+	
 	return {
 		"id": id,
 		"pos": {
-			"x": round(player_node.position.x), 
-			"y": round(player_node.position.y)
+			"x": client.tile.x, 
+			"y": client.tile.y
 		},
+		"name": client.name,
 		"bots": other_bots,
 		"world_view": neighborhood, # The new 2D array of tile data
-		"name": client.name,
-		"chat_logs": client.chat_context
+		"chat_logs": chat_context
 	}
 	
-	client.chat_context = []
+	
 
 ## Helper to build the JSON-friendly 2D array
 func get_tile_neighborhood(center_tile: Vector2i, radius: int) -> Array:
@@ -98,8 +101,11 @@ func handle_action(client, response):
 	var player_node = client.node
 	if response.has("move_x") and response.has("move_y"):
 		print("Moved")
-		client.tile += Vector2i(response.move_x, response.move_y)
-		player_node.move_to_tile(client.tile)
+		var new_tile: Vector2i = client.tile + Vector2i(response.move_x, response.move_y)
+		
+		if new_tile != client.tile:
+			if player_node.move_to_tile(client.tile):
+				client.tile = new_tile
 	
 	if response.has("chat"):
 		print("chatted")
@@ -115,7 +121,7 @@ func handle_action(client, response):
 
 		for id2 in clients:
 			var client2 = clients[id2]
-			if client_distance(client, client2) <= CHAT_DISTANCE:
+			if client_distance(client, client2) <= CHAT_DISTANCE and id2 != client.id:
 				client2.chat_context.append(chat_string)
 			
 		
@@ -145,12 +151,19 @@ func add_client():
 		"node": new_player,
 		"name": "undefined",
 		"color_index": color_index,
+		"first_time": true,
 		"chat_context": [],
 		"tile": Vector2i(0,0),
 		"time_since_last_update": UPDATE_INTERVAL, # So it imediatly sends update
 		"position": new_player.position
 		}
 	print("Spawned player for Client: ", client_id)
+
+func send_client_context(socket, client):
+	var context = get_context_packet(client)
+	socket.send_text(JSON.stringify(context))
+	print("Sent Context")
+	client.time_since_last_update = 0.0 # Reset the clock
 
 func update_client(client, _delta):	
 	var socket = client.socket
@@ -185,12 +198,9 @@ func update_client(client, _delta):
 		# Send current state back to the specific Python agent
 		
 		
-		if got_packet or client.time_since_last_update >= UPDATE_INTERVAL:
-			
-			var context = get_context_packet(client)
-			socket.send_text(JSON.stringify(context))
-			print("Sent Context")
-			client.time_since_last_update = 0.0 # Reset the clock
+		if got_packet or client.first_time: # or client.time_since_last_update >= UPDATE_INTERVAL:
+			send_client_context(socket, client)
+			client.first_time = false
 		
 		
 	elif state == WebSocketPeer.STATE_CLOSED:

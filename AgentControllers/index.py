@@ -105,8 +105,8 @@ def get_action_model(first_time=False):
     # Base fields every action has
     config = ConfigDict(extra='forbid')
     fields = {
-        "move_x": (int, Field(description="How many steps to move horizontally: -1 for left, 0 for idle, 1 for right.")),
-        "move_y": (int, Field(description="How many steps to move vertically: -1 for up, 0 for idle, 1 for down.")),
+        "move_x": (int, Field(description="How many steps to move horizontally: negative for left, 0 for idle, positive for right.")),
+        "move_y": (int, Field(description="How many steps to move vertically: negative for up, 0 for idle, positive for down.")),
         "chat": (str, Field(description="Chat message.")),
         "reason": (str, Field(description="Logic behind the move."))
     }
@@ -171,7 +171,8 @@ async def think_node(state: AgentState):
         f"You are a bot. Wander Around and chat with other bots. "
         f"Here is your personality: {state['personality']}"
         f"{name_prompt}"
-        f"Choose a movement: 'up', 'down', 'left', 'right', or 'idle'. "
+        f"Chat word limit is 10 per message"
+        f"You can move two tiles in the x and y directions each turn including diagonals, or choose to stay idle. "
         f"You can also respond to others or say something in chat. Provide your response in a structured format with 'move', 'chat', and 'reason' fields."
         f"You are a 2D grid explorer. Your surroundings are represented by an ASCII grid where:"
         f"@ is You (always the center)."
@@ -187,6 +188,8 @@ async def think_node(state: AgentState):
 
         f"Your current local map view is:\n"
         f"{ascii_grid}\n"
+        f"Here are the recent chats\n"
+        f"{"\n".join(data.get("chat_logs", []))}"
     )
 
     # Game Context
@@ -195,9 +198,11 @@ async def think_node(state: AgentState):
         "content": game_data_promt
     })
 
+    print(state["messages"][-10:],)
+
     DynamicAction = get_action_model(first_time=state["first_time"])
 
-    print("Sending request to LLM...")
+    # print("Sending request to LLM...")
 
     completion = client.chat.completions.create(
         model=MODEL,
@@ -244,6 +249,10 @@ async def run_agent(personality):
                 message = await websocket.recv()
                 game_data = json.loads(message)
 
+
+                # print(game_data.get("name", "No Name Provided"))
+                # print(game_data.get("chat_logs", []))
+
                 # print(f"game_data: {game_data}")
                 # print()
                 
@@ -270,7 +279,7 @@ async def run_agent(personality):
 
                 decision = raw_workflow_resp.get("decision", {})
 
-                print(f"LLM Decision: {decision}")
+                # print(f"LLM Decision: {decision}")
 
                 # 3. Send back
                 await websocket.send(json.dumps(decision))
