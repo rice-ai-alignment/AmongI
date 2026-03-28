@@ -11,7 +11,7 @@ Colorful Among Us-style sprites wander a 2D scene. A chat log panel in the botto
 ```
 ┌─────────────────────┐        WebSocket         ┌──────────────────────────┐
 │   Godot 4 (Game)    │ ◄──────────────────────► │   Python Agent Runner    │
-│                     │   port 8080              │                          │
+│                     │         port 8080        │                          │
 │  - Renders world    │                          │  - Loads LLM personas    │
 │  - Moves sprites    │  Game state (JSON) ──►   │  - Calls Gemini/OpenAI   │
 │  - Shows chat HUD   │  ◄── Actions (JSON)      │  - Sends move + chat     │
@@ -52,8 +52,7 @@ Python → Godot (agent decision):
 |---|---|
 | [Godot Engine](https://godotengine.org/download/) | 4.x |
 | Python | 3.10+ |
-| Google Gemini API key | (default) |
-| OpenAI API key | (optional, instead of Gemini) |
+| Open API key | (default) |
 
 ## Setup
 
@@ -78,16 +77,11 @@ Create a file called `.env` inside the `AgentControllers/` folder:
 ```bash
 # AgentControllers/.env
 
-# Use Google Gemini (default):
-GOOGLE_API_KEY=your_google_api_key_here
-
-# Or use OpenAI instead:
+# Use OpenAI:
 # MODEL_PROVIDER=openai
 # OPENAI_API_KEY=your_openai_api_key_here
 # OPENAI_MODEL=gpt-4o-mini
 ```
-
-Get a free Google Gemini API key at [aistudio.google.com](https://aistudio.google.com).
 
 ### 4. Import the Godot project
 
