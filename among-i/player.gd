@@ -20,16 +20,25 @@ var is_moving: bool = false
 @export var idle_row: int = 0        # The Y-coordinate in your SpriteSheet for idle
 @export var frame_count: int = 4     # How many frames are in your walking animation loop
 
+func get_tile_position(target_tile_coords: Vector2i):
+	return tile_map.map_to_local(target_tile_coords) + Vector2(100, -80)
+
+func set_tile_position(target_tile_coords: Vector2i):
+	tile = target_tile_coords
+	self.global_position = get_tile_position(target_tile_coords)
+
 func move_to_tile(target_tile_coords: Vector2i):
 	if is_moving:
 		return false
+		
+	tile = target_tile_coords
 		
 	var sprite = get_node("Sprite2D")
 		
 	if not _is_tile_walkable(target_tile_coords):
 		return false
 
-	var target_world_position = tile_map.map_to_local(target_tile_coords) + Vector2(100, -80)
+	var target_world_position = get_tile_position(target_tile_coords)
 	
 	is_moving = true
 	var tween = create_tween()
