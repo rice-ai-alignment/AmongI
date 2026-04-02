@@ -44,7 +44,7 @@ func get_context_packet(client):
 	
 	# 1. Fetch the tile neighborhood
 	# Assuming 'tile_map' is accessible globally or on the server node
-	var neighborhood = get_tile_neighborhood(client.tile, visibility_radius)
+	var neighborhood = get_ascii_world_view(client.tile, visibility_radius)
 	
 	var other_bots = []
 	for id2 in clients.keys():
@@ -68,41 +68,48 @@ func get_context_packet(client):
 		},
 		"name": client.name,
 		"bots": other_bots,
-		"world_view": neighborhood, # The new 2D array of tile data
+		"world_view": neighborhood, # Ascii ART
 		"chat_logs": chat_context
 	}
-	
-	
 
-## Helper to build the JSON-friendly 2D array
-func get_tile_neighborhood(center_tile: Vector2i, radius: int) -> Array:
-	var grid = []
+## Generates an ASCII representation of the tiles around a center point
+func get_ascii_world_view(center_tile: Vector2i, radius: int) -> String:
+	var ascii_grid = ""
 	
+	# 1. Define character mapping
+	var mapping = {
+		"walkable": ". ",
+		"blocked": "# ",
+		"player": "@ "
+	}
+
+	# 2. Iterate through the neighborhood
 	for y in range(-radius, radius + 1):
-		var row = []
+		var line = ""
 		for x in range(-radius, radius + 1):
+			# The player is always at the relative (0,0) offset
+			if x == 0 and y == 0:
+				line += mapping["player"]
+				continue
+			
 			var target_coords = center_tile + Vector2i(x, y)
 			var data = tile_map.get_cell_tile_data(target_coords)
-			var atlas_pos = tile_map.get_cell_atlas_coords(target_coords)
+			var is_walkable = false
 			
-			# We build a dictionary that Python can easily parse
-			var tile_info = {
-				"x": target_coords.x,
-				"y": target_coords.y,
-				"type": "empty",
-				"walkable": false
-			}
+			# Check if tile exists and if the "walkable" custom data is true
+			if data:
+				is_walkable = data.get_custom_data("walkable")
 			
-			if tile_map.get_cell_source_id(target_coords) != -1:
-				tile_info["type"] = str(atlas_pos) # e.g. "(1, 2)"
-				if data:
-					# Pull whatever custom data your Python bot needs to know
-					tile_info["walkable"] = data.get_custom_data("walkable")
-			
-			row.append(tile_info)
-		grid.append(row)
+			# 3. Append character based on walkability
+			if is_walkable:
+				line += mapping["walkable"]
+			else:
+				line += mapping["blocked"]
 		
-	return grid
+		# Add the completed row to the final string with a newline
+		ascii_grid += line + "\n"
+	
+	return ascii_grid
 	
 func handle_action(client, response):
 	var player_node = client.node

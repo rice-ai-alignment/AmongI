@@ -46,51 +46,6 @@ def load_random_personalities(folder_path: str, count: int):
             
     return personalities
 
-def render_ascii_grid(packet):
-    # 1. Extract the world_view from the packet
-    # The world_view is a 2D list: [rows][columns]
-    grid_data = packet.get("world_view", [])
-    
-    if not grid_data:
-        print("No world data found in packet.")
-        return
-
-    # 2. Define our character mapping
-    # Adjust 'type' strings to match your Godot Atlas Coords or Custom Data
-    mapping = {
-        "walkable": ".",    # Ground
-        "blocked": "#",     # Wall
-        "player": "@",      # The bot itself
-        "other_bot": "B"    # Other entities
-    }
-
-    # 3. Determine the center of the grid (where the player is)
-    grid_height = len(grid_data)
-    grid_width = len(grid_data[0]) if grid_height > 0 else 0
-    center_y = grid_height // 2
-    center_x = grid_width // 2
-    
-    string = ""
-    for y in range(grid_height):
-        line = ""
-        for x in range(grid_width):
-            tile = grid_data[y][x]
-            
-            # Logic to determine which character to print
-            char = mapping["blocked"]
-            
-            if x == center_x and y == center_y:
-                char = mapping["player"]
-            elif tile.get("walkable"):
-                char = mapping["walkable"]
-            
-            # Optional: Check if an 'other_bot' is on this specific tile
-            # (Requires checking tile['x'] and tile['y'] against packet['bots'])
-            
-            line += char + " " # Space for better square-ish aspect ratio
-        string += line + "\n"
-    return string
-
 def make_strict(schema):
     if isinstance(schema, dict):
         if schema.get("type") == "object":
@@ -180,7 +135,7 @@ async def think_node(state: AgentState):
         f"# is a Wall or obstacle."
     )
 
-    ascii_grid = render_ascii_grid(data)
+    ascii_grid = data.get("world_view", "No map data provided.")
 
     print(f"ASCII Grid:\n{ascii_grid}"  )
 
@@ -194,7 +149,7 @@ async def think_node(state: AgentState):
         f"Your current local map view is:\n"
         f"{ascii_grid}\n"
         f"Here are the recent chats\n"
-        + "\n".join(data.get("chat_logs", []))
+        f"{ '\n'.join(data.get("chat_logs", [])) }"
         f"The bots that are visible to you are:\n"
         f"{bots_prompt}"
     )
