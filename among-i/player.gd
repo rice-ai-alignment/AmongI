@@ -10,8 +10,7 @@ var speed = 200
 
 var is_moving: bool = false
 
-var tile: Vector2i
-
+@export var tile: Vector2i
 ## Call this function to move the player to a specific tile coordinate (e.g., Vector2i(5, 3))
 # Assumes you have an AnimationPlayer node as a child of the Player
 
