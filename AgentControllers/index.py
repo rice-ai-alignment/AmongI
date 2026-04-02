@@ -189,7 +189,7 @@ async def think_node(state: AgentState):
         f"Your current local map view is:\n"
         f"{ascii_grid}\n"
         f"Here are the recent chats\n"
-        f"{"\n".join(data.get("chat_logs", []))}"
+        + "\n".join(data.get("chat_logs", []))
     )
 
     # Game Context

@@ -1,0 +1,8 @@
+asyncio
+websockets
+python-dotenv
+langchain-google-genai
+langchain-openai
+openai
+pydantic
+google-genai
