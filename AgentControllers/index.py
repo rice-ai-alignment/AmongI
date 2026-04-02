@@ -138,15 +138,15 @@ class AgentState(TypedDict):
 uri = "ws://localhost:8080"
 
 
+client = OpenAI(
+  base_url="https://openrouter.ai/api/v1",
+  api_key=os.getenv("OPEN_ROUTER_API_KEY")
+)
+
 # client = OpenAI(
 #   base_url="https://openrouter.ai/api/v1",
-#   api_key=os.getenv("OPENROUTER_API_KEY")
+#   api_key=os.getenv("OPENAI_API_KEY")
 # )
-
-client = OpenAI(
-#   base_url="https://openrouter.ai/api/v1",
-  api_key=os.getenv("OPENAI_API_KEY")
-)
 
 
 def create_chat_prompt_part(chat_logs):
@@ -184,12 +184,19 @@ async def think_node(state: AgentState):
 
     print(f"ASCII Grid:\n{ascii_grid}"  )
 
+    bots_prompt = ""
+    for bot in data.get("bots", []):
+        print("Bot Info:", bot)
+        bots_prompt += f"{bot.get('name', 'Unknown')} - {bot.get('delta_x', 0)}, {bot.get('delta_y', 0)}\n"
+
     game_data_promt = (
 
         f"Your current local map view is:\n"
         f"{ascii_grid}\n"
         f"Here are the recent chats\n"
         f"{"\n".join(data.get("chat_logs", []))}"
+        f"The bots that are visible to you are:\n"
+        f"{bots_prompt}"
     )
 
     # Game Context
@@ -224,7 +231,7 @@ async def think_node(state: AgentState):
     )
 
     # Use the unified LLM interface
-    response = DynamicAction.model_validate_json(completion.choices[0].message.content)
+    response = DynamicAction.model_validate_json(str(completion.choices[0].message.content))
     json_response = response.model_dump_json()
 
     state["messages"].append({
@@ -248,6 +255,8 @@ async def run_agent(personality):
                # 1. Receive state
                 message = await websocket.recv()
                 game_data = json.loads(message)
+
+                print(game_data.get("bots", []))
 
 
                 # print(game_data.get("name", "No Name Provided"))
@@ -293,7 +302,7 @@ async def run_agent(personality):
 async def main():
     # Load 3 random personalities from your folder
     persona_folder = "./personas" 
-    personalities = load_random_personalities(persona_folder, count=1)
+    personalities = load_random_personalities(persona_folder, count=2)
 
     # Create tasks for each personality loaded
     tasks = [run_agent(p) for p in personalities]
