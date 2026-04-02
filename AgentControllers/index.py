@@ -140,7 +140,7 @@ uri = "ws://localhost:8080"
 
 client = OpenAI(
   base_url="https://openrouter.ai/api/v1",
-  api_key=os.getenv("OPEN_ROUTER_API_KEY")
+  api_key=os.getenv("OPENROUTER_API_KEY")
 )
 
 # client = OpenAI(
@@ -287,6 +287,11 @@ async def run_agent(personality):
                     # raw_workflow_resp = {"decision": {"move_x": 0, "move_y": 0, "chat": "", "reason": "LLM processing failed, defaulting to idle."}}
 
                 decision = raw_workflow_resp.get("decision", {})
+
+                # Remove empty or whitespace-only chat messages so they don't appear in-game
+                chat = decision.get("chat")
+                if isinstance(chat, str) and not chat.strip():
+                    decision.pop("chat", None)
 
                 # print(f"LLM Decision: {decision}")
 
