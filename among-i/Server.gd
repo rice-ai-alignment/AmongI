@@ -28,11 +28,14 @@ func client_distance(client, client2):
 
 # Client2 from Client 1s perspective
 func get_relative_client_data(client, client2):
-	var client_pos = client.node.position
-	var client2_pos = client2.node.position
+	var client_pos = client.tile
+	var client2_pos = client2.tile
+	var diff = client2_pos - client_pos
 	return {
 		"distance": client_pos.distance_to(client2_pos),
-		"angle":  client_pos.angle_to(client2_pos)
+		"delta_x":  diff.x,
+		"delta_y":  diff.y,
+		"name": client.name
 	}
 	
 func get_context_packet(client):
@@ -47,7 +50,12 @@ func get_context_packet(client):
 	for id2 in clients.keys():
 		if id2 == id:
 			continue
-		other_bots.append(get_relative_client_data(client, clients[id2]))
+		var packet = get_relative_client_data(client, clients[id2])
+		
+		# Checking Visibility range
+		if abs(packet.delta_x) <= visibility_radius \
+			and abs(packet.delta_y) <= visibility_radius:
+			other_bots.append(packet)
 	
 	var chat_context = client.chat_context 
 	client.chat_context = []
