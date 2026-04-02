@@ -37,7 +37,6 @@ func get_relative_client_data(client, client2):
 	
 func get_context_packet(client):
 	var id = client.id
-	var player_node = client.node
 	var visibility_radius = 4 # Adjust this for a 5x5 grid (2*2 + 1)
 	
 	# 1. Fetch the tile neighborhood
@@ -139,7 +138,8 @@ func add_client():
 	new_player.name = "Agent_" + str(client_id)
 	new_player.tile_map = tile_map
 	add_child(new_player)
-	new_player.position = Vector2(randf_range(100, 500), randf_range(100, 500))
+	var start_pos = Vector2i(randi_range(0, 5),randi_range(0, 5))
+	new_player.set_tile_position(start_pos)
 	
 	var color_index = total_bots % 7
 	new_player.get_node("Sprite2D").frame_coords = Vector2i(color_index, 0)
@@ -153,7 +153,7 @@ func add_client():
 		"color_index": color_index,
 		"first_time": true,
 		"chat_context": [],
-		"tile": Vector2i(0,0),
+		"tile": start_pos,
 		"time_since_last_update": UPDATE_INTERVAL, # So it imediatly sends update
 		"position": new_player.position
 		}
