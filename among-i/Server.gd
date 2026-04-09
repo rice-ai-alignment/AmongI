@@ -14,6 +14,8 @@ var UPDATE_INTERVAL = 3.0 # Send data once per second
 
 var total_bots = 0
 
+var KILL_DISTANCE = 2
+
 var CHAT_DISTANCE = 10000
 
 # Colors matching the 7 Among Us sprite columns (index 0–6)
@@ -24,7 +26,9 @@ func _ready():
 		print("Server listening for agents on port ", port)
 
 func client_distance(client, client2):
-	return client.node.position.distance_to(client2.node.position)
+	var client_pos = client.tile
+	var client2_pos = client2.tile
+	return client_pos.distance_to(client2_pos)
 
 # Client2 from Client 1s perspective
 func get_relative_client_data(client, client2):
@@ -111,24 +115,22 @@ func get_ascii_world_view(center_tile: Vector2i, radius: int) -> String:
 		ascii_grid += line + "\n"
 	
 	return ascii_grid
-	
-var KILL_DISTANCE = 10
+
 	
 func get_closest_client(client):
 	var closest_client = null 
 	var closest_distance = 10000000
-	for client2 in clients:
-		if client2 == client:
-			pass
+	for id in clients.keys():
+		var client2 = clients[id]
+		if id == client.id:
+			continue
 		
 		var dist = client_distance(client, client2)
 		if dist < closest_distance and dist < KILL_DISTANCE:
 			dist = closest_distance
 			closest_client = client2
 			
-	
-	if closest_client != null:
-		kill_client(closest_client, client)
+	return closest_client
 		
 func kill_client(victim, killer):
 	victim.socket.close()
@@ -144,10 +146,12 @@ func handle_action(client, response):
 			if player_node.move_to_tile(client.tile):
 				client.tile = new_tile
 				
-	if response.has("kill") and client.imposter \
-		and response["kill"].to_lower() == "kill":
+	if response.has("attack") and client.imposter \
+		and response["attack"].to_lower() == "attack":
 		# Looking for closest player
 		var closest_player = get_closest_client(client)
+		if closest_player:
+			kill_client(closest_player, client)
 		
 	
 	if response.has("chat"):

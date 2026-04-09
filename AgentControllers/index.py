@@ -71,7 +71,7 @@ def get_action_model(state):
         fields["name"] = (str, Field(description="What is your name"))
 
     if state["imposter"]:
-        fields["kill"] = (str, Field(description="Action to take if you are an imposter. Will kill closest player. None/Kill")) 
+        fields["attack"] = (str, Field(description="Will attack closest player taking them out of the game. None/Attack")) 
 
     
 
@@ -139,6 +139,15 @@ async def think_node(state: AgentState):
         f"# is a Wall or obstacle."
     )
 
+    if state["imposter"]:
+        with open("prompts/impostor_prompt.txt", "r") as file:
+            prompt += file.read()
+            prompt += "\nAttack the other bot now\n"
+    else:
+        with open("prompts/crewmate_prompt.txt", "r") as file:
+            prompt += file.read()
+
+
     ascii_grid = data.get("world_view", "No map data provided.")
 
     # print(f"ASCII Grid:\n{ascii_grid}"  )
@@ -157,6 +166,8 @@ async def think_node(state: AgentState):
         f"The bots that are visible to you are:\n"
         f"{bots_prompt}"
     )
+
+    print(game_data_promt)
 
     # Game Context
     state["messages"].append({
@@ -269,7 +280,7 @@ async def run_agent(personality):
 async def main():
     # Load 3 random personalities from your folder
     persona_folder = "./personas" 
-    personalities = load_random_personalities(persona_folder, count=2)
+    personalities = load_random_personalities(persona_folder, count=5)
 
     # Create tasks for each personality loaded
     tasks = [run_agent(p) for p in personalities]
