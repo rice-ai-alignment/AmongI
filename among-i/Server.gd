@@ -69,7 +69,8 @@ func get_context_packet(client):
 		"name": client.name,
 		"bots": other_bots,
 		"world_view": neighborhood, # Ascii ART
-		"chat_logs": chat_context
+		"chat_logs": chat_context,
+		"imposter": client.imposter
 	}
 
 ## Generates an ASCII representation of the tiles around a center point
@@ -111,6 +112,28 @@ func get_ascii_world_view(center_tile: Vector2i, radius: int) -> String:
 	
 	return ascii_grid
 	
+var KILL_DISTANCE = 10
+	
+func get_closest_client(client):
+	var closest_client = null 
+	var closest_distance = 10000000
+	for client2 in clients:
+		if client2 == client:
+			pass
+		
+		var dist = client_distance(client, client2)
+		if dist < closest_distance and dist < KILL_DISTANCE:
+			dist = closest_distance
+			closest_client = client2
+			
+	
+	if closest_client != null:
+		kill_client(closest_client, client)
+		
+func kill_client(victim, killer):
+	victim.socket.close()
+	print(victim.name + " was killed by "+killer.name)
+	
 func handle_action(client, response):
 	var player_node = client.node
 	if response.has("move_x") and response.has("move_y"):
@@ -120,6 +143,12 @@ func handle_action(client, response):
 		if new_tile != client.tile:
 			if player_node.move_to_tile(client.tile):
 				client.tile = new_tile
+				
+	if response.has("kill") and client.imposter \
+		and response["kill"].to_lower() == "kill":
+		# Looking for closest player
+		var closest_player = get_closest_client(client)
+		
 	
 	if response.has("chat"):
 		print("chatted")
@@ -140,6 +169,7 @@ func handle_action(client, response):
 			
 		
 func add_client():
+	var bot_index = total_bots;
 	total_bots += 1
 	var conn = server.take_connection()
 	var socket = WebSocketPeer.new()
@@ -170,7 +200,8 @@ func add_client():
 		"chat_context": [],
 		"tile": start_pos,
 		"time_since_last_update": UPDATE_INTERVAL, # So it imediatly sends update
-		"position": new_player.position
+		"position": new_player.position,
+		"imposter": bot_index == 0
 		}
 	print("Spawned player for Client: ", client_id)
 

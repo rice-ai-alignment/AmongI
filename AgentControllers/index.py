@@ -56,7 +56,7 @@ def make_strict(schema):
         for item in schema:
             make_strict(item)
 
-def get_action_model(first_time=False):
+def get_action_model(state):
     # Base fields every action has
     config = ConfigDict(extra='forbid')
     fields = {
@@ -67,8 +67,11 @@ def get_action_model(first_time=False):
     }
     
     # Dynamically add the 'name' field ONLY if it's the first time
-    if first_time:
+    if state["first_time"]:
         fields["name"] = (str, Field(description="What is your name"))
+
+    if state["imposter"]:
+        fields["kill"] = (str, Field(description="Action to take if you are an imposter. Will kill closest player. None/Kill")) 
 
     
 
@@ -89,13 +92,14 @@ class AgentState(TypedDict):
     personality: str
     first_time: bool
     messages: list
+    imposter: bool
 
 uri = "ws://localhost:8080"
 
 
 client = OpenAI(
   base_url="https://openrouter.ai/api/v1",
-  api_key=os.getenv("OPENROUTER_API_KEY")
+  api_key=os.getenv("OPEN_ROUTER_API_KEY")
 )
 
 # client = OpenAI(
@@ -137,7 +141,7 @@ async def think_node(state: AgentState):
 
     ascii_grid = data.get("world_view", "No map data provided.")
 
-    print(f"ASCII Grid:\n{ascii_grid}"  )
+    # print(f"ASCII Grid:\n{ascii_grid}"  )
 
     bots_prompt = ""
     for bot in data.get("bots", []):
@@ -160,9 +164,9 @@ async def think_node(state: AgentState):
         "content": game_data_promt
     })
 
-    print(state["messages"][-10:],)
+    # print(state["messages"][-10:],)
 
-    DynamicAction = get_action_model(first_time=state["first_time"])
+    DynamicAction = get_action_model(state)
 
     # print("Sending request to LLM...")
 
@@ -229,8 +233,11 @@ async def run_agent(personality):
                     "decision": {},
                     "personality": personality,
                     "first_time": first_time,
-                    "messages": []
+                    "messages": [],
+                    "imposter": game_data.get("imposter", False),
                 }
+
+                print(f"Received game state. First time: {first_time}, Imposter: {input_state['imposter']}")
 
                 try:
                     print("Processing state through LLM workflow...")
