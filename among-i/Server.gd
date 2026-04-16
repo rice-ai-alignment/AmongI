@@ -39,7 +39,7 @@ func get_relative_client_data(client, client2):
 		"distance": client_pos.distance_to(client2_pos),
 		"delta_x":  diff.x,
 		"delta_y":  diff.y,
-		"name": client.name
+		"name": client2.name
 	}
 	
 func get_context_packet(client):
