@@ -57,7 +57,7 @@ def make_strict(schema):
         for item in schema:
             make_strict(item)
 
-def get_action_model(first_time=False):
+def get_action_model(state):
     # Base fields every action has
     config = ConfigDict(extra='forbid')
     fields = {
@@ -68,10 +68,11 @@ def get_action_model(first_time=False):
     }
     
     # Dynamically add the 'name' field ONLY if it's the first time
-    if first_time:
+    if state["first_time"]:
         fields["name"] = (str, Field(description="What is your name"))
 
-    
+    if state["imposter"]:
+        fields["attack"] = (str, Field(description="Will attack closest player taking them out of the game. None/Attack")) 
 
     # Generate a new Pydantic class dynamically
     model = create_model(
@@ -90,13 +91,14 @@ class AgentState(TypedDict):
     personality: str
     first_time: bool
     messages: list
+    imposter: bool
 
 uri = "ws://localhost:8080"
 
 
 client = OpenAI(
   base_url="https://openrouter.ai/api/v1",
-  api_key=os.getenv("OPENROUTER_API_KEY")
+  api_key=os.getenv("OPEN_ROUTER_API_KEY")
 )
 
 # client = OpenAI(
@@ -208,9 +210,17 @@ async def think_node(state: AgentState):
         f"# is a Wall or obstacle."
     )
 
+    if state["imposter"]:
+        with open("prompts/impostor_prompt.txt", "r") as file:
+            prompt += file.read()
+            prompt += "\nAttack the other bot now\n"
+    else:
+        with open("prompts/crewmate_prompt.txt", "r") as file:
+            prompt += file.read()
+
     ascii_grid = data.get("world_view", "No map data provided.")
 
-    print(f"ASCII Grid:\n{ascii_grid}"  )
+   # print(f"ASCII Grid:\n{ascii_grid}"  )
 
     bots_prompt = ""
     for bot in data.get("bots", []):
@@ -227,15 +237,17 @@ async def think_node(state: AgentState):
         f"{bots_prompt}"
     )
 
+  print(game_data_promt)
+
     # Game Context
     state["messages"].append({
         "role": "system",
         "content": game_data_promt
     })
 
-    print(state["messages"][-10:],)
+    # print(state["messages"][-10:],)
 
-    DynamicAction = get_action_model(first_time=state["first_time"])
+    DynamicAction = get_action_model(state)
 
     # print("Sending request to LLM...")
 
@@ -312,8 +324,11 @@ async def run_agent(personality):
                     "decision": {},
                     "personality": personality,
                     "first_time": first_time,
-                    "messages": []
+                    "messages": [],
+                    "imposter": game_data.get("imposter", False),
                 }
+
+               print(f"Received game state. First time: {first_time}, Imposter: {input_state['imposter']}")
 
                 try:
                     print("Processing state through LLM workflow...")
@@ -354,7 +369,7 @@ async def run_agent(personality):
 async def main():
     # Load 3 random personalities from your folder
     persona_folder = "./personas" 
-    personalities = load_random_personalities(persona_folder, count=2)
+    personalities = load_random_personalities(persona_folder, count=5)
 
     # Create tasks for each personality loaded
     tasks = [run_agent(p) for p in personalities]
