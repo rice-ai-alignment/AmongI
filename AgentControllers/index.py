@@ -121,6 +121,10 @@ def create_chat_prompt_part(chat_logs):
 async def think_node(state: AgentState):
     data = state['game_data']
 
+    if data.get("clear_memory", False):
+        state["messages"] = []
+        print("Memory cleared as per game instruction.")
+
     name_prompt = "Chose a name for other bots to see?" 
     if not state['first_time']:
         name_prompt = f"Your chosen name is {data['name']}."
