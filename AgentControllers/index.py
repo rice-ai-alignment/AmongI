@@ -162,7 +162,7 @@ async def think_node(state: AgentState):
         f"Your current local map view is:\n"
         f"{ascii_grid}\n"
         f"Here are the recent chats\n"
-        f"{ '\n'.join(data.get("chat_logs", [])) }"
+        f"{ '\n'.join(data.get("chat_logs", [])) }\n"
         f"The bots that are visible to you are:\n"
         f"{bots_prompt}"
     )
