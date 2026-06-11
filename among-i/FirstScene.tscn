@@ -1,8 +1,8 @@
 [gd_scene format=4 uid="uid://bxlemvyn2ipuh"]
 
-[ext_resource type="Script" uid="uid://b6qkw5y4ny4nj" path="res://Server.gd" id="1_klfix"]
+[ext_resource type="Script" uid="uid://b6qkw5y4ny4nj" path="res://Scripts/Server.gd" id="1_klfix"]
 [ext_resource type="TileSet" uid="uid://c2607ic4e1nda" path="res://tiles.tres" id="2_klfix"]
-[ext_resource type="PackedScene" path="res://ChatBox.tscn" id="3_0w2fn"]
+[ext_resource type="PackedScene" uid="uid://b23futpcvfa4x" path="res://ChatBox.tscn" id="3_0w2fn"]
 
 [node name="Node2D" type="Node2D" unique_id=1285183098 node_paths=PackedStringArray("tile_map")]
 script = ExtResource("1_klfix")

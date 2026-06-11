@@ -230,6 +230,9 @@ async def run_agent(personality):
                 message = await websocket.recv()
                 game_data = json.loads(message)
 
+                if game_data.get("idle", False):
+                    continue
+
                 print(game_data.get("bots", []))
 
 
