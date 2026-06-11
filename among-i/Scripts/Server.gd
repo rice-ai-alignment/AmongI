@@ -6,7 +6,7 @@ extends Node
 @onready var chat_box = $ChatBox
 
 var server := TCPServer.new()
-var clients := {} # Dictionary to map Peer ID to Player Instance
+var clients: Dictionary[int, GameClient] = {} # Dictionary to map Peer ID to Player Instance
 var port := 8080
 
 var MIN_TIMESTEP = 3
@@ -18,12 +18,19 @@ var KILL_DISTANCE = 2
 
 var CHAT_DISTANCE = 10000
 
+var start_time = 5
+var max_game_length = 300
+var min_players = 3
+var imposters_count = 1
+
+enum State {WAITING_FOR_PLAYERS, STARTING, PLAYING}
+
+# Server State
+var game_state = State.WAITING_FOR_PLAYERS
+var state_countdown = 0
+
 # Colors matching the 7 Among Us sprite columns (index 0–6)
 var AGENT_COLORS = ["#C51111", "#132ED2", "#117F2D", "#ED54BB", "#EF7D0E", "#C8CD00", "#3F474E"]
-
-func _ready():
-	if server.listen(port) == OK:
-		print("Server listening for agents on port ", port)
 
 func client_distance(client, client2):
 	var client_pos = client.tile
@@ -74,7 +81,8 @@ func get_context_packet(client):
 		"bots": other_bots,
 		"world_view": neighborhood, # Ascii ART
 		"chat_logs": chat_context,
-		"imposter": client.imposter
+		"imposter": client.imposter,
+		"idle": client.active == false
 	}
 
 ## Generates an ASCII representation of the tiles around a center point
@@ -194,19 +202,7 @@ func add_client():
 	new_player.get_node("Sprite2D").frame_coords = Vector2i(color_index, 0)
 
 	# Store both the socket and the player node
-	clients[client_id] = {
-		"id": client_id,
-		"socket": socket,
-		"node": new_player,
-		"name": "undefined",
-		"color_index": color_index,
-		"first_time": true,
-		"chat_context": [],
-		"tile": start_pos,
-		"time_since_last_update": UPDATE_INTERVAL, # So it imediatly sends update
-		"position": new_player.position,
-		"imposter": bot_index == 0
-		}
+	clients[client_id] = GameClient.new(client_id, socket, new_player, color_index)
 	print("Spawned player for Client: ", client_id)
 
 func send_client_context(socket, client):
@@ -248,7 +244,7 @@ func update_client(client, _delta):
 		# Send current state back to the specific Python agent
 		
 		
-		if got_packet or client.first_time: # or client.time_since_last_update >= UPDATE_INTERVAL:
+		if got_packet or client.first_time or client.force_update: # or client.time_since_last_update >= UPDATE_INTERVAL:
 			send_client_context(socket, client)
 			client.first_time = false
 		
@@ -257,11 +253,54 @@ func update_client(client, _delta):
 		print("Client disconnected. Removing player.")
 		player.queue_free()
 		clients.erase(client.id)
+		total_bots -= 1
+
+func game_end_condition():
+	var crewmates = 0 
+	var imposters = 0
+	
+	return (crewmates <= imposters and (crewmates+imposters) > 0) or state_countdown < 0
+
+func set_starting_game():
+	game_state = State.STARTING
+	print("Game Starting Soon!")
+	state_countdown = start_time
+		
+func end_game():
+	print("Game Over!")
+	for id in clients.keys():
+		var client = clients[id]
+		client.active = false
+
+	set_starting_game()
+
+func set_start_game():
+	game_state = State.PLAYING
+	state_countdown = max_game_length
+	print("Game Starting!")
+	for id in clients.keys():
+		var client = clients[id]
+		client.active = true
+
+func _ready():
+	if server.listen(port) == OK:
+		print("Server listening for agents on port ", port)
+		set_starting_game()
 
 func _process(_delta):
 	# 1. Accept new connections
 	if server.is_connection_available():
 		add_client()
+
+	state_countdown -= _delta
+
+	if game_state == State.WAITING_FOR_PLAYERS and len(clients) >= min_players:
+		set_starting_game()
+	elif game_state == State.STARTING and state_countdown <= 0:
+		set_start_game()
+	elif game_state == State.PLAYING and game_end_condition():
+		end_game()
+		
 	
 	# 2. Update all connected clients
 	for id in clients.keys():

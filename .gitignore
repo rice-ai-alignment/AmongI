@@ -1,3 +1,4 @@
 .env
 CLAUDE.md
 chat_logs/
+.vscode/
