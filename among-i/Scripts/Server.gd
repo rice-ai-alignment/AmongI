@@ -22,7 +22,7 @@ var CHAT_DISTANCE = 10000
 var start_time = 5
 var max_game_length = 300
 var min_players = 1
-var imposters_count = 0
+var imposters_count = 1
 
 enum State {WAITING_FOR_PLAYERS, STARTING, PLAYING}
 
