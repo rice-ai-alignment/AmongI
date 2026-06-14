@@ -70,7 +70,7 @@ def get_action_model(state):
     if state["first_time"]:
         fields["name"] = (str, Field(description="What is your name"))
 
-    if state["imposter"]:
+    if state["is_imposter"]:
         fields["attack"] = (str, Field(description="Will attack closest player taking them out of the game. None/Attack")) 
 
     
@@ -92,7 +92,7 @@ class AgentState(TypedDict):
     personality: str
     first_time: bool
     messages: list
-    imposter: bool
+    is_imposter: bool
 
 uri = "ws://localhost:8080"
 
@@ -132,7 +132,7 @@ async def think_node(state: AgentState):
     # Construct a prompt based on the specific agent's state
     prompt = (
         f"You are a bot. Wander Around and chat with other bots. "
-        f"Here is your personality: {state['personality']}"
+        # f"Here is your personality: {state['personality']}"
         f"{name_prompt}"
         f"Chat word limit is 10 per message"
         f"You can move two tiles in the x and y directions each turn including diagonals, or choose to stay idle. "
@@ -143,7 +143,7 @@ async def think_node(state: AgentState):
         f"# is a Wall or obstacle."
     )
 
-    if state["imposter"]:
+    if state["is_imposter"]:
         with open("prompts/impostor_prompt.txt", "r") as file:
             prompt += file.read()
             prompt += "\nAttack the other bot now\n"
@@ -159,7 +159,7 @@ async def think_node(state: AgentState):
     bots_prompt = ""
     for bot in data.get("bots", []):
         print("Bot Info:", bot)
-        bots_prompt += f"{bot.get('name', 'Unknown')} - {bot.get('delta_x', 0)}, {bot.get('delta_y', 0)}\n"
+        bots_prompt += f"{bot.get('name', 'Unknown')} : {bot.get('delta_x', 0)}, {bot.get('delta_y', 0)}\n"
 
     game_data_promt = (
 
@@ -215,8 +215,49 @@ async def think_node(state: AgentState):
 
     return {"decision": json.loads(json_response)}
 
+async def agent_node(game_data, index, personality,):
+    input_state: AgentState = {
+        "game_data": game_data,
+        "decision": {},
+        "personality": personality,
+        "first_time": index == 0,
+        "messages": [],
+        "is_imposter": game_data.get("is_imposter", False),
+    }
+
+    print(f"Received game state. index: {index}, Imposter: {input_state['is_imposter']}")
+
+    try:
+        print("Processing state through LLM workflow...")
+
+        raw_workflow_resp = await think_node(input_state)
+    except Exception as e:
+        print(f"Error during LLM processing: {e}")
+        return None
+        # raw_workflow_resp = {"decision": {"move_x": 0, "move_y": 0, "chat": "", "reason": "LLM processing failed, defaulting to idle."}}
+
+    return raw_workflow_resp.get("decision", {})
+
+async def hard_node(game_data, index, personality):
+    # print("This is a hardcoded node. It ignores the game state and always returns the same action.")
+    hard_moves = [
+        {"move_x": 0, "move_y": 0, "chat": "Stay", "reason": "Hardcode"},
+        {"move_x": 1, "move_y": 0, "chat": "Right", "reason": "Hardcode"},
+        {"move_x": -1, "move_y": 0, "chat": "Left", "reason": "Hardcode"},
+        {"move_x": 0, "move_y": 1, "chat": "Up", "reason": "Hardcode"},
+        {"move_x": 0, "move_y": -1, "chat": "Down", "reason": "Hardcode"},
+        
+    ]
+
+    ascii_grid = game_data.get("world_view", "No map data provided.")
+
+    print(f"ASCII Grid:\n{ascii_grid}"  )
+
+    return hard_moves[index % len(hard_moves)]
+
+
 # 2. WebSocket Communication
-async def run_agent(personality):
+async def run_agent(personality, node):
     
     print("Connecting to Godot Server...")
     
@@ -224,62 +265,24 @@ async def run_agent(personality):
         async with websockets.connect(uri) as websocket:
             print("Successfully connected to Godot!")
             
-            first_time = True
+            index = 0
             while True:
                # 1. Receive state
                 message = await websocket.recv()
                 game_data = json.loads(message)
 
-                if game_data.get("idle", False):
-                    continue
+                # If Idle then just ignore the update its just to keep the socket alive
+                if game_data.get("is_idle", False):
+                    websocket.send({})
 
                 print(game_data.get("bots", []))
 
-
-                # print(game_data.get("name", "No Name Provided"))
-                # print(game_data.get("chat_logs", []))
-
-                # print(f"game_data: {game_data}")
-                # print()
-                
-                # 2. Call the full workflow, then extract the node output.
-                # This preserves multi-node workflows while ensuring we only send
-                # the agent action (move/chat/reason) back to the server.
-                # Provide minimal AgentState to satisfy the typed signature
-                input_state: AgentState = {
-                    "game_data": game_data,
-                    "decision": {},
-                    "personality": personality,
-                    "first_time": first_time,
-                    "messages": [],
-                    "imposter": game_data.get("imposter", False),
-                }
-
-                print(f"Received game state. First time: {first_time}, Imposter: {input_state['imposter']}")
-
-                try:
-                    print("Processing state through LLM workflow...")
-
-                    raw_workflow_resp = await think_node(input_state)
-                except Exception as e:
-                    print(f"Error during LLM processing: {e}")
-                    break
-                    # raw_workflow_resp = {"decision": {"move_x": 0, "move_y": 0, "chat": "", "reason": "LLM processing failed, defaulting to idle."}}
-
-                decision = raw_workflow_resp.get("decision", {})
-
-                # Remove empty or whitespace-only chat messages so they don't appear in-game
-                chat = decision.get("chat")
-                if isinstance(chat, str) and not chat.strip():
-                    decision.pop("chat", None)
-
-                # print(f"LLM Decision: {decision}")
+                decision = await node(game_data, index, personality)
 
                 # 3. Send back
                 await websocket.send(json.dumps(decision))
+                index += 1
                 await asyncio.sleep(3)
-
-                first_time = False
                 
     except Exception as e:
         print(f"Connection lost: {e}")
@@ -287,10 +290,10 @@ async def run_agent(personality):
 async def main():
     # Load 3 random personalities from your folder
     persona_folder = "./personas" 
-    personalities = load_random_personalities(persona_folder, count=5)
+    personalities = load_random_personalities(persona_folder, count=1)
 
     # Create tasks for each personality loaded
-    tasks = [run_agent(p) for p in personalities]
+    tasks = [run_agent(p, hard_node) for p in personalities]
 
     print(f"🚀 Launching {len(tasks)} agents from folder...")
     await asyncio.gather(*tasks)
