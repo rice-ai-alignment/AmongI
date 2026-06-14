@@ -2,7 +2,7 @@ extends RefCounted
 class_name GameClient
 
 var id: int
-var socket: StreamPeerTCP  # Or PacketPeerUDP / WebSocketPeer
+var socket: WebSocketPeer # Or PacketPeerUDP / WebSocketPeer
 var node: Node       # Replace with your actual Player script type
 var name: String = "undefined"
 var color_index: int
@@ -21,3 +21,4 @@ func _init(_id: int, _socket, _node, _color: int):
 	socket = _socket
 	node = _node
 	color_index = _color
+	is_active = false
