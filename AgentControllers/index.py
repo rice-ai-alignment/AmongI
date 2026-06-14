@@ -290,10 +290,11 @@ async def run_agent(personality, node):
 async def main():
     # Load 3 random personalities from your folder
     persona_folder = "./personas" 
-    personalities = load_random_personalities(persona_folder, count=1)
+    personalities = load_random_personalities(persona_folder, count=5)
 
     # Create tasks for each personality loaded
-    tasks = [run_agent(p, hard_node) for p in personalities]
+    tasks = [run_agent(p, agent_node) for p in personalities]
+    # hard_node can be used for testing without LLM calls
 
     print(f"🚀 Launching {len(tasks)} agents from folder...")
     await asyncio.gather(*tasks)
