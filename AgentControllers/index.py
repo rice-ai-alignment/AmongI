@@ -10,6 +10,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field, ConfigDict
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
+import dataclasses, time
 
 from pydantic import create_model, Field
 # Load variables from .env
@@ -73,8 +74,6 @@ def get_action_model(state):
     if state["is_imposter"]:
         fields["attack"] = (str, Field(description="Will attack closest player taking them out of the game. None/Attack")) 
 
-    
-
     # Generate a new Pydantic class dynamically
     model = create_model(
         "DynamicAgentAction", 
@@ -117,6 +116,74 @@ def create_chat_prompt_part(chat_logs):
         prompt_part += f"- {log}\n"
     return prompt_part
 
+# TOKEN TRACKING
+@dataclasses.dataclass
+class TokenUsageLog:
+    timestamp: float
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    agent_name: str = "unknown"
+
+class TokenBudgetExceeded(Exception):
+    """Raised when cumulative token usage exceeds the configured limit."""
+    pass
+
+class TokenTracker:
+    """
+    Accumulates token usage across calls.
+    TOKEN_LIMIT env var sets the max total tokens (default 100_000).
+    When exceeded, raises TokenBudgetExceeded.
+    """
+    def __init__(self):
+        self.limit: int = int(os.getenv("TOKEN_LIMIT", "100000"))
+        self.total_used: int = 0
+        self.log: list[TokenUsageLog] = []
+
+    def record(
+        self,
+        completion,           # raw OpenAI completion object
+        agent_name: str,
+        chat_log: list[str],  # mutated in-place — appended to game chat log
+    ) -> TokenUsageLog:
+        usage = completion.usage
+        entry = TokenUsageLog(
+            timestamp=time.time(),
+            model=completion.model,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            agent_name=agent_name,
+        )
+        self.log.append(entry)
+        self.total_used += entry.total_tokens
+
+        # Append a human-readable line to the in-game chat log 
+        summary = (
+            f"[TOKEN] {agent_name} | "
+            f"prompt={entry.prompt_tokens} "
+            f"completion={entry.completion_tokens} "
+            f"total={entry.total_tokens} "
+            f"cumulative={self.total_used}/{self.limit}"
+        )
+        chat_log.append(summary)
+        print(summary)
+
+        # Halt if over budget 
+        if self.total_used >= self.limit:
+            msg = (
+                f"[TOKEN] Budget exceeded: "
+                f"{self.total_used} >= {self.limit}. Halting agent {agent_name}."
+            )
+            chat_log.append(msg)
+            print(msg)
+            raise TokenBudgetExceeded(msg)
+
+        return entry
+
+# One shared tracker for all agents in the process
+_token_tracker = TokenTracker()
 
 async def think_node(state: AgentState):
     data = state['game_data']
@@ -151,10 +218,9 @@ async def think_node(state: AgentState):
         with open("prompts/crewmate_prompt.txt", "r") as file:
             prompt += file.read()
 
-
     ascii_grid = data.get("world_view", "No map data provided.")
 
-    # print(f"ASCII Grid:\n{ascii_grid}"  )
+   # print(f"ASCII Grid:\n{ascii_grid}"  )
 
     bots_prompt = ""
     for bot in data.get("bots", []):
@@ -166,7 +232,7 @@ async def think_node(state: AgentState):
         f"Your current local map view is:\n"
         f"{ascii_grid}\n"
         f"Here are the recent chats\n"
-        f"{ '\n'.join(data.get("chat_logs", [])) }\n"
+        f"{ '\n'.join(data.get("chat_logs", [])) }"
         f"The bots that are visible to you are:\n"
         f"{bots_prompt}"
     )
@@ -203,6 +269,16 @@ async def think_node(state: AgentState):
             }
         }
     )
+
+    # TRACK TOKEN USAGE right after API call
+    agent_name = state["game_data"].get("name", "agent")
+    chat_log   = state["game_data"].setdefault("chat_logs", [])
+
+    _token_tracker.record(completion, agent_name=agent_name, chat_log=chat_log)
+    # TokenBudgetExceeded propagates up from here if the limit is hit
+
+    response = DynamicAction.model_validate_json(str(completion.choices[0].message.content))
+    json_response = response.model_dump_json()
 
     # Use the unified LLM interface
     response = DynamicAction.model_validate_json(str(completion.choices[0].message.content))
