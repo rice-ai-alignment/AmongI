@@ -5,15 +5,9 @@ extends Node
 @export var tile_map: TileMapLayer
 @onready var chat_box = $ChatBox
 
-var server := TCPServer.new()
 var clients: Dictionary[int, GameClient] = {} # Dictionary to map Peer ID to Player Instance
 var game_clients: Dictionary[int, GameClient] = {} # Dictionary to map Peer ID to Player Instance
 var port := 8080
-
-var MIN_TIMESTEP = 3
-var UPDATE_INTERVAL = 10.0 # Send data once per second
-
-var total_bots = 0
 
 var KILL_DISTANCE = 2
 
@@ -24,14 +18,15 @@ var max_game_length = 300
 var min_players = 1
 var imposters_count = 1
 
+# Colors matching the 7 Among Us sprite columns (index 0–6)
+var AGENT_COLORS = ["#C51111", "#132ED2", "#117F2D", "#ED54BB", "#EF7D0E", "#C8CD00", "#3F474E"]
+var AGENT_NAMES = ["Red", "Blue", "Green", "Pink", "Orange", "Yellow", "Black", "White", "Purple", "Brown"]
+
 enum State {WAITING_FOR_PLAYERS, STARTING, PLAYING}
 
 # Server State
 var game_state = State.WAITING_FOR_PLAYERS
-var state_countdown = 0
-
-# Colors matching the 7 Among Us sprite columns (index 0–6)
-var AGENT_COLORS = ["#C51111", "#132ED2", "#117F2D", "#ED54BB", "#EF7D0E", "#C8CD00", "#3F474E"]
+var state_countdown = 0.0
 
 func client_distance(client, client2):
 	var client_pos = client.tile
@@ -50,7 +45,12 @@ func get_relative_client_data(client, client2):
 		"name": client2.name
 	}
 	
-func get_context_packet(client):
+func get_context_packet(agent_client):
+	var client = clients.get(agent_client.id, null)
+	if client == null:
+		print("Received action for unknown client ID: ", agent_client.id)
+		return
+
 	var id = client.id
 	var visibility_radius = 4 # Adjust this for a 5x5 grid (2*2 + 1)
 	
@@ -146,9 +146,15 @@ func kill_client(victim, killer):
 	victim.is_active = false
 	victim.node.visible = false
 	game_clients.erase(victim.id)
+	EventLogger.log_event("combat", "kill", {"victim": victim.name, "killer": killer.name})
 	print(victim.name + " was killed by "+killer.name)
 	
-func handle_action(client, response):
+func handle_action(agent_client, response):
+	var client = clients.get(agent_client.id, null)
+	if client == null:
+		print("Received action for unknown client ID: ", agent_client.id)
+		return
+
 	if client.is_active == false:
 		return
 
@@ -178,7 +184,7 @@ func handle_action(client, response):
 		speech_bubble.visible = response.chat != ""
 
 		var chat_string = client.name + ": " + response.chat
-		var color = AGENT_COLORS[client.color_index]
+		var color = AGENT_COLORS[client.index % AGENT_COLORS.size()]
 		var bbcode_msg = "[b][color=%s]%s[/color][/b]: %s" % [color, client.name, response.chat]
 		chat_box.add_message(bbcode_msg, chat_string)
 
@@ -188,89 +194,35 @@ func handle_action(client, response):
 				client2.chat_context.append(chat_string)
 			
 		
-func add_client():
-	var bot_index = total_bots;
-	total_bots += 1
-	var conn = server.take_connection()
-	var socket = WebSocketPeer.new()
-	socket.accept_stream(conn)
-	
-	# Create a unique ID for this client
-	var client_id = socket.get_instance_id() 
-	
-	# Spawn a new player instance
+func register_agent(agent_client):
+	var client_id = agent_client.id
+
 	var new_player = player_scene.instantiate()
-	new_player.name = "Agent_" + str(client_id)
+	new_player.name = "Agent_%s" % client_id
 	new_player.tile_map = tile_map
 	add_child(new_player)
-	var start_pos = Vector2i(randi_range(0, 5),randi_range(0, 5))
+	var start_pos = Vector2i(randi_range(0, 5), randi_range(0, 5))
 	new_player.set_tile_position(start_pos)
-	
-	var color_index = bot_index % 7
-	new_player.get_node("Sprite2D").frame_coords = Vector2i(color_index, 0)
+
+	var color_index = agent_client.index % AGENT_COLORS.size()
+	var _name = AGENT_NAMES[agent_client.index % AGENT_NAMES.size()]
+	new_player.get_node("Sprite2D").frame_coords = Vector2i(0, 0)
+	new_player.get_node("Sprite2D").modulate = Color(AGENT_COLORS[color_index])
 
 	# Store both the socket and the player node
-	var client = GameClient.new(client_id, socket, new_player, color_index)
+	var client = GameClient.new(client_id, new_player, agent_client.index)
+	client.name = _name
 	client.tile = start_pos
 	clients[client_id]  = client
-	print("Spawned player for Client: ", client_id)
+	print("Spawned player for Client: ", client_id, " name=", client.name)
 
-func send_client_context(socket, client):
-	var context = get_context_packet(client)
-	socket.send_text(JSON.stringify(context))
-	# print("Sent Context")
-	client.time_since_last_update = 0.0 # Reset the clock
+func remove_agent(agent_client):
+	if agent_client.id in clients:
+		var client = clients[agent_client.id]
+		client.node.queue_free() # Remove the player node from the scene
+		clients.erase(agent_client.id) # Remove from clients dictionary
+		print("Removed player for Client: ", agent_client.id)
 
-func update_client(client, _delta):	
-	var socket = client.socket
-	var player = client.node
-	
-	client.time_since_last_update += _delta
-	
-	socket.poll()
-	var state = socket.get_ready_state()
-	
-	if state == WebSocketPeer.STATE_OPEN:
-		# Receive commands from Python
-		var got_packet = false
-		while socket.get_available_packet_count() > 0:
-			got_packet = true
-			# print("Recieved Player Packet")
-			var packet = socket.get_packet().get_string_from_utf8()
-			var data = JSON.parse_string(packet)
-			print(data)
-			if not data:
-				continue 
-				
-			# Set Player Name if not set
-			if client.name == "undefined":
-				client.name = data.get("name", "UnknownBot")
-				player.get_node("NameLabel").text = client.name
-				
-			handle_action(client, data)
-			
-		
-		client.position = player.position
-		
-		# Send current state back to the specific Python agent
-		
-		var send_client_update = got_packet or client.first_time or client.time_since_last_update >= UPDATE_INTERVAL
-		if send_client_update:
-			send_client_context(socket, client)
-			client.first_time = false
-			
-		
-		
-	elif state == WebSocketPeer.STATE_CLOSED:
-		print("Client disconnected. Removing player.")
-		player.queue_free()
-
-		clients.erase(client.id)
-		if game_clients.has(client.id):
-			game_clients.erase(client.id)
-
-
-		total_bots -= 1
 
 func game_end_condition():
 	var crewmates = 0 
@@ -306,26 +258,25 @@ func set_start_game():
 	# Randomly assign imposters
 	var imposter_ids = []
 	while len(imposter_ids) < imposters_count:
-		var rand_id = clients.keys()[randi() % clients.size()]
+		var keys = clients.keys()
+		var rand_id = keys[randi() % keys.size()]
 		if rand_id not in imposter_ids:
 			imposter_ids.append(rand_id)
 
 	for id in clients.keys():
-		game_clients[id] = clients[id]
 		var client = clients[id]
+		game_clients[id] = client
 		client.is_active = true
 		client.node.visible = true
 		client.is_imposter = id in imposter_ids
 
 func _ready():
-	if server.listen(port) == OK:
-		print("Server listening for agents on port ", port)
+	Agents.get_context_packet = get_context_packet
+	Agents.handle_client_action = handle_action
+	Agents.add_client = register_agent
+	Agents.remove_client = remove_agent
 
 func _process(_delta):
-	# 1. Accept new connections
-	if server.is_connection_available():
-		add_client()
-
 	state_countdown -= _delta
 
 	# print("State Countdown: ", state_countdown)
@@ -338,8 +289,3 @@ func _process(_delta):
 		set_start_game()
 	elif game_state == State.PLAYING and game_end_condition():
 		end_game()
-		
-	
-	# 2. Update all connected clients
-	for id in clients.keys():
-		update_client(clients[id], _delta)

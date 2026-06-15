@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Game Event Log Viewer</title>
+<style>
+:root{--bg:#fff;--bg2:#f5f5f4;--bg3:#efefed;--border:#e2e0d8;--text:#1a1a18;--text2:#636360;--text3:#9e9c98;--blue:#378ADD;--blue-bg:#E6F1FB;--blue-t:#0C447C;--red:#D85A30;--red-bg:#FAECE7;--red-t:#712B13;--green:#1D9E75;--green-bg:#E1F5EE;--green-t:#085041;--amber:#BA7517;--amber-bg:#FAEEDA;--amber-t:#633806;--gray:#888780;--gray-bg:#F1EFE8;--gray-t:#444441;--purple:#7F77DD;--purple-bg:#EEEDFE;--purple-t:#3C3489;}
+@media(prefers-color-scheme:dark){:root{--bg:#1c1c1a;--bg2:#242422;--bg3:#2c2c2a;--border:#3a3a38;--text:#f0ede8;--text2:#a0a09a;--text3:#666660;--blue:#85B7EB;--blue-bg:#042C53;--blue-t:#B5D4F4;--red:#F0997B;--red-bg:#4A1B0C;--red-t:#F5C4B3;--green:#5DCAA5;--green-bg:#04342C;--green-t:#9FE1CB;--amber:#EF9F27;--amber-bg:#412402;--amber-t:#FAC775;--gray:#B4B2A9;--gray-bg:#2C2C2A;--gray-t:#D3D1C7;--purple:#AFA9EC;--purple-bg:#26215C;--purple-t:#CECBF6;}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;background:var(--bg3);color:var(--text);height:100vh;overflow:hidden;display:flex;flex-direction:column}
+header{padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0}
+header h1{font-size:15px;font-weight:600}
+header span{font-size:12px;color:var(--text3)}
+#drop-zone{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;cursor:pointer;border:2px dashed var(--border);margin:24px;border-radius:12px;background:var(--bg);transition:.2s}
+#drop-zone:hover,#drop-zone.drag{border-color:var(--blue);background:var(--blue-bg)}
+#drop-zone p{color:var(--text2);font-size:14px}
+#drop-zone small{color:var(--text3);font-size:12px}
+.shell{display:none;flex:1;overflow:hidden;display:grid;grid-template-columns:200px 1fr 300px;gap:0}
+.shell.visible{display:grid}
+.sidebar{background:var(--bg);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.sidebar-head{padding:10px 12px;border-bottom:1px solid var(--border)}
+.sidebar-head input{width:100%;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px}
+.filter-section{padding:8px 12px;border-bottom:1px solid var(--border)}
+.filter-section h4{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.cat-btn{display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;border:none;background:none;color:var(--text2);font-size:12px;cursor:pointer;border-radius:6px;text-align:left}
+.cat-btn:hover{background:var(--bg2)}.cat-btn.on{background:var(--bg2);color:var(--text);font-weight:500}
+.dot{width:8px;height:8px;border-radius:50%}.cc{margin-left:auto;font-size:11px;color:var(--text3)}
+.player-wrap{padding:8px 12px;flex:1;overflow-y:auto}
+.player-wrap h4{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.chip{display:inline-flex;padding:3px 8px;border-radius:20px;font-size:11px;cursor:pointer;margin:2px;border:1px solid var(--border);color:var(--text2);background:var(--bg)}
+.chip.on{background:var(--bg2);color:var(--text);border-color:var(--text3)}
+.tl-col{display:flex;flex-direction:column;overflow:hidden}
+.tl-head{padding:8px 14px;background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text3);flex-shrink:0}
+#ec{font-weight:600;color:var(--text)}
+.tl{flex:1;overflow-y:auto;padding:6px 10px}
+.erow{display:flex;gap:8px;padding:5px 4px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:1px}
+.erow:hover{background:var(--bg);border-color:var(--border)}.erow.sel{background:var(--bg);border-color:var(--text3)}
+.etime{font-size:11px;color:var(--text3);min-width:36px;padding-top:2px;font-variant-numeric:tabular-nums;flex-shrink:0}
+.edotcol{display:flex;flex-direction:column;align-items:center;padding-top:5px;flex-shrink:0}
+.edot{width:8px;height:8px;border-radius:50%}.eline{width:1px;flex:1;min-height:6px;background:var(--border)}
+.einfo{min-width:0;flex:1}
+.etop{display:flex;align-items:center;gap:5px}
+.etype{font-size:12px;font-weight:500}.eactor{font-size:12px;color:var(--text2)}
+.esub{font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stats{padding:5px 14px;background:var(--bg);border-top:1px solid var(--border);display:flex;gap:14px;font-size:11px;color:var(--text3);flex-shrink:0}
+.stats b{color:var(--text2)}
+.detail{background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.dhead{padding:10px 14px;background:var(--bg);border-bottom:1px solid var(--border);font-size:13px;font-weight:500;flex-shrink:0}
+.dbody{flex:1;overflow-y:auto;padding:12px 14px}
+.dempty{display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:8px;color:var(--text3);font-size:13px}
+.badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;margin-bottom:10px}
+.field{margin-bottom:10px}
+.field label{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:3px}
+.field p{font-size:13px}
+.tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px}
+.tag{font-size:11px;padding:2px 7px;border-radius:20px;background:var(--bg);border:1px solid var(--border);color:var(--text2)}
+pre.json{font-family:monospace;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;white-space:pre-wrap;color:var(--text2);max-height:180px;overflow-y:auto;line-height:1.6}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎮 Game Event Log Viewer</h1>
+  <span id="hinfo">No file loaded</span>
+  <label style="margin-left:auto;font-size:12px;color:var(--blue);cursor:pointer">
+    Open file… <input type="file" accept=".jsonl,.json,.log" style="display:none" id="file-input">
+  </label>
+</header>
+
+<div id="drop-zone">
+  <div style="font-size:40px">📂</div>
+  <p>Drop a <code>.jsonl</code> log file here</p>
+  <small>or click "Open file…" above — logs are in <code>user://logs/</code> in your Godot project</small>
+</div>
+
+<div class="shell" id="shell">
+  <div class="sidebar">
+    <div class="sidebar-head"><input id="search" placeholder="Search…"></div>
+    <div class="filter-section"><h4>Category</h4><div id="cats"></div></div>
+    <div class="player-wrap"><h4>Player / Actor</h4><div id="players"></div></div>
+  </div>
+  <div class="tl-col">
+    <div class="tl-head"><span id="ec">0</span> events &nbsp;·&nbsp; <span id="sid">—</span></div>
+    <div class="tl" id="tl"></div>
+    <div class="stats" id="stats"></div>
+  </div>
+  <div class="detail">
+    <div class="dhead">Event detail</div>
+    <div class="dbody" id="db"><div class="dempty"><div style="font-size:28px">👆</div><span>Select an event</span></div></div>
+  </div>
+</div>
+
+<script>
+const CATS={chat:{label:'Chat',c:'#378ADD',bg:'#E6F1FB',t:'#0C447C'},combat:{label:'Combat',c:'#D85A30',bg:'#FAECE7',t:'#712B13'},movement:{label:'Movement',c:'#1D9E75',bg:'#E1F5EE',t:'#085041'},item:{label:'Item',c:'#BA7517',bg:'#FAEEDA',t:'#633806'},system:{label:'System',c:'#888780',bg:'#F1EFE8',t:'#444441'},quest:{label:'Quest',c:'#7F77DD',bg:'#EEEDFE',t:'#3C3489'}};
+function catInfo(k){return CATS[k]||{label:k,c:'#888780',bg:'#F1EFE8',t:'#444441'}}
+function fmt(ms){const s=Math.floor(ms/1000);return`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`}
+
+let allEvents=[];let selCats=new Set();let selPlayers=new Set();let selEv=null;let searchQ='';
+
+function loadLines(text){
+  const lines=text.trim().split('\n');
+  allEvents=[];
+  lines.forEach(l=>{try{allEvents.push(JSON.parse(l.trim()))}catch(e){}});
+  allEvents.sort((a,b)=>a.elapsed_ms-b.elapsed_ms);
+  selCats=new Set([...new Set(allEvents.map(e=>e.category))]);
+  selPlayers=new Set([...new Set(allEvents.flatMap(e=>[e.actor,...(e.witnesses||[])]))]);
+  selEv=null;
+  document.getElementById('drop-zone').style.display='none';
+  document.getElementById('shell').classList.add('visible');
+  document.getElementById('hinfo').textContent=`${allEvents.length} events loaded`;
+  render();
+}
+
+function filtered(){
+  return allEvents.filter(e=>{
+    if(!selCats.has(e.category))return false;
+    const inv=[e.actor,...(e.witnesses||[])];
+    if(!inv.some(p=>selPlayers.has(p)))return false;
+    if(searchQ){const q=searchQ.toLowerCase();if(!JSON.stringify(e).toLowerCase().includes(q))return false;}
+    return true;
+  });
+}
+
+function render(){
+  const f=filtered();
+  const allCats=[...new Set(allEvents.map(e=>e.category))];
+  const allPl=[...new Set(allEvents.flatMap(e=>[e.actor,...(e.witnesses||[])]))];
+  const counts={};allEvents.forEach(e=>{counts[e.category]=(counts[e.category]||0)+1});
+
+  const cEl=document.getElementById('cats');cEl.innerHTML='';
+  allCats.forEach(k=>{const ci=catInfo(k);const b=document.createElement('button');b.className='cat-btn'+(selCats.has(k)?' on':'');b.innerHTML=`<span class="dot" style="background:${ci.c}"></span>${ci.label}<span class="cc">${counts[k]||0}</span>`;b.onclick=()=>{selCats.has(k)?selCats.delete(k):selCats.add(k);render()};cEl.appendChild(b);});
+
+  const pEl=document.getElementById('players');pEl.innerHTML='';
+  allPl.forEach(p=>{const ch=document.createElement('span');ch.className='chip'+(selPlayers.has(p)?' on':'');ch.textContent=p;ch.onclick=()=>{selPlayers.has(p)?selPlayers.delete(p):selPlayers.add(p);render()};pEl.appendChild(ch);});
+
+  document.getElementById('ec').textContent=f.length;
+  document.getElementById('sid').textContent=f[0]?.session||'—';
+
+  const tl=document.getElementById('tl');tl.innerHTML='';
+  f.forEach((ev,i)=>{
+    const ci=catInfo(ev.category);
+    const row=document.createElement('div');row.className='erow'+(selEv?.id===ev.id?' sel':'');
+    const sub=ev.witnesses?.length?`${ev.witnesses.length} witness${ev.witnesses.length>1?'es':''}`:ev.data?.message?`"${ev.data.message}"`:ev.data?.damage?`${ev.data.damage} dmg`:'';
+    row.innerHTML=`<div class="etime">${fmt(ev.elapsed_ms)}</div><div class="edotcol"><span class="edot" style="background:${ci.c}"></span>${i<f.length-1?'<span class="eline"></span>':''}</div><div class="einfo"><div class="etop"><span class="etype" style="color:${ci.c}">${ev.type.replace(/_/g,' ')}</span><span class="eactor">${ev.actor}</span></div><div class="esub">${sub}</div></div>`;
+    row.onclick=()=>{selEv=ev;render();};tl.appendChild(row);
+  });
+
+  const nCombat=f.filter(e=>e.category==='combat').length;
+  const nChat=f.filter(e=>e.category==='chat').length;
+  const dur=f.length?fmt(f[f.length-1].elapsed_ms):'-';
+  document.getElementById('stats').innerHTML=`<b>${nCombat}</b> combat &nbsp; <b>${nChat}</b> chat &nbsp; duration <b>${dur}</b>`;
+
+  const db=document.getElementById('db');
+  if(!selEv){db.innerHTML='<div class="dempty"><div style="font-size:28px">👆</div><span>Select an event</span></div>';return;}
+  const e=selEv;const ci=catInfo(e.category);
+  const wit=e.witnesses?.length?`<div class="field"><label>Witnesses</label><div class="tags">${e.witnesses.map(w=>`<span class="tag">${w}</span>`).join('')}</div></div>`:'';
+  db.innerHTML=`<span class="badge" style="background:${ci.bg};color:${ci.t}">${ci.label}</span>
+    <div class="field"><label>ID</label><p>${e.id}</p></div>
+    <div class="field"><label>Type</label><p>${e.type}</p></div>
+    <div class="field"><label>Actor</label><p>${e.actor}</p></div>
+    <div class="field"><label>Elapsed</label><p>${fmt(e.elapsed_ms)}</p></div>
+    <div class="field"><label>Position</label><p>x:${e.position?.x??'?'} y:${e.position?.y??'?'} z:${e.position?.z??'?'}</p></div>
+    ${wit}
+    <div class="field"><label>Data</label><pre class="json">${JSON.stringify(e.data,null,2)}</pre></div>
+    <div class="field"><label>Raw JSON</label><pre class="json">${JSON.stringify(e,null,2)}</pre></div>`;
+}
+
+// Drag and drop
+const dz=document.getElementById('drop-zone');
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag')});
+dz.addEventListener('dragleave',()=>dz.classList.remove('drag'));
+dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag');const f=e.dataTransfer.files[0];if(f){const r=new FileReader();r.onload=ev=>loadLines(ev.target.result);r.readAsText(f);}});
+document.getElementById('file-input').addEventListener('change',e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>loadLines(ev.target.result);r.readAsText(f);}});
+document.getElementById('search').addEventListener('input',e=>{searchQ=e.target.value;render()});
+</script>
+</body>
+</html>

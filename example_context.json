@@ -9,6 +9,9 @@
     "Bot_Beta: Hello there!",
     "System: A door has opened."
   ],
+  "events": [
+    "Bob was killed by red"
+  ],
   "bots": [
     {
       "name": "Bot_Beta",
