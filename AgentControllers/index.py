@@ -17,7 +17,7 @@ from pydantic import create_model, Field
 load_dotenv()
 
 # Load example response for shaping prompts and coercion
-EXAMPLE_PATH = os.path.join(os.path.dirname(__file__), "example_response.json")
+# EXAMPLE_PATH = os.path.join(os.path.dirname(__file__), "example_response.json")
 
 EXAMPLE_RESPONSE = {"move": "idle", "chat": "", "reason": ""}
 
@@ -62,7 +62,7 @@ def get_action_model(state):
     config = ConfigDict(extra='forbid')
     fields = {
         "move_x": (int, Field(description="How many steps to move horizontally: negative for left, 0 for idle, positive for right.")),
-        "move_y": (int, Field(description="How many steps to move vertically: negative for up, 0 for idle, positive for down.")),
+        "move_y": (int, Field(description="How many steps to move vertically: negative for up, 0 for idle, positive for up.")),
         "chat": (str, Field(description="Chat message.")),
         "reason": (str, Field(description="Logic behind the move."))
     }
@@ -337,31 +337,33 @@ async def run_agent(personality, node):
     
     print("Connecting to Godot Server...")
     
-    try:
-        async with websockets.connect(uri) as websocket:
-            print("Successfully connected to Godot!")
-            
-            index = 0
-            while True:
-               # 1. Receive state
-                message = await websocket.recv()
-                game_data = json.loads(message)
+    # try:
+    async with websockets.connect(uri) as websocket:
+        print("Successfully connected to Godot!")
+        
+        index = 0
+        while True:
+            # 1. Receive state
+            message = await websocket.recv()
+            game_data = json.loads(message)
 
-                # If Idle then just ignore the update its just to keep the socket alive
-                if game_data.get("is_idle", False):
-                    websocket.send({})
+            print("Game data received from server:", game_data)
 
-                print(game_data.get("bots", []))
+            # If Idle then just ignore the update its just to keep the socket alive
+            if game_data.get("is_idle", False):
+                websocket.send({})
 
-                decision = await node(game_data, index, personality)
+            print(game_data.get("bots", []))
 
-                # 3. Send back
-                await websocket.send(json.dumps(decision))
-                index += 1
-                await asyncio.sleep(3)
+            decision = await node(game_data, index, personality)
+
+            # 3. Send back
+            await websocket.send(json.dumps(decision))
+            index += 1
+            await asyncio.sleep(3)
                 
-    except Exception as e:
-        print(f"Connection lost: {e}")
+    # except Exception as e:
+    #     print(f"Connection lost: {e}")
 
 async def main():
     # Load 3 random personalities from your folder

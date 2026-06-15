@@ -15,6 +15,11 @@ run/main_scene="uid://bxlemvyn2ipuh"
 config/features=PackedStringArray("4.6", "GL Compatibility")
 config/icon="res://icon.svg"
 
+[autoload]
+
+EventLogger="*uid://bea1omsqhnvxb"
+Agents="*uid://dnj65ycv7myvx"
+
 [physics]
 
 3d/physics_engine="Jolt Physics"
