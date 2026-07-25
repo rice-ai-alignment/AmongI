@@ -3,3 +3,4 @@ CLAUDE.md
 chat_logs/
 logs/
 .vscode/
+__pycache__/

@@ -4,17 +4,25 @@ extends Node
 @export var player_scene: PackedScene = preload("res://Player.tscn")
 @export var tile_map: TileMapLayer
 @onready var chat_box = $ChatBox
+@onready var camera: Camera2D = $Camera2D
 
 var clients: Dictionary[int, GameClient] = {} # Dictionary to map Peer ID to Player Instance
 var game_clients: Dictionary[int, GameClient] = {} # Dictionary to map Peer ID to Player Instance
 var port := 8080
 
-var KILL_DISTANCE = 2
+var KILL_DISTANCE = 3
 
 var CHAT_DISTANCE = 10000
 
-var start_time = 5
-var max_game_length = 300
+# Camera auto-framing
+var _camera_padding: float = 500.0
+var _camera_min_zoom: float = 0.05
+var _camera_max_zoom: float = 8.0
+var _camera_smooth_speed: float = 4.0
+var _camera_min_world_size: float = 400.0
+
+var start_time = 15
+var max_game_length = 600
 var min_players = 1
 var imposters_count = 1
 
@@ -22,11 +30,61 @@ var imposters_count = 1
 var AGENT_COLORS = ["#C51111", "#132ED2", "#117F2D", "#ED54BB", "#EF7D0E", "#C8CD00", "#3F474E"]
 var AGENT_NAMES = ["Red", "Blue", "Green", "Pink", "Orange", "Yellow", "Black", "White", "Purple", "Brown"]
 
-enum State {WAITING_FOR_PLAYERS, STARTING, PLAYING}
+const BASE_PROMPT = """
+You are a bot. Wander around and chat with other bots. Chat word limit is 10 per message.
+You can move two tiles in the x and y directions each turn including diagonals, or choose to stay idle.
+You can also respond to others or say something in chat. Provide your response in a structured format with 'move', 'chat', and 'reason' fields.
+You are a 2D grid explorer. Your surroundings are represented by an ASCII grid where @ is You (always the center),
+ . is Walkable ground, and # is a Wall or obstacle.
+"""
+const CREWMATE_INSTRUCTIONS = """
+You are a crewmate. Stay alive, observe other bots, and chat naturally. Avoid attacking unless necessary.
+"""
+const IMPOSTOR_INSTRUCTIONS = """
+You are an impostor. Your goal is to eliminate crewmates. When another bot is nearby
+(within a few tiles), set attack to "attack" in your response to kill them.
+Attack only when someone is close — the kill only works on the nearest bot within range.
+Blend in by chatting normally and avoid drawing suspicion.
+"""
+
+const VOTE_PROMPT = """
+VOTING PHASE: Discuss and then cast your vote.
+You cannot move or attack during voting.
+After 30 seconds the player with the most votes will be ejected.
+"""
+
+enum State {WAITING_FOR_PLAYERS, STARTING, PLAYING, VOTING}
 
 # Server State
 var game_state = State.WAITING_FOR_PLAYERS
 var state_countdown = 0.0
+var recent_global_chats: Array = []
+var recent_events: Array = []
+var vote_choices: Dictionary = {}
+var _last_vote_log_second: int = -1
+var _clear_memory_flags: Dictionary = {}
+
+func broadcast_system_message(message: String) -> void:
+	var bbcode = "[b][color=#FFFFFF]SYSTEM[/color][/b]: " + message
+	chat_box.add_message(bbcode)
+	recent_global_chats.append(message)
+	print("SYSTEM: ", message)
+
+func check_win_condition() -> Dictionary:
+	var crewmates = 0
+	var imposters = 0
+	for id in game_clients.keys():
+		var c = game_clients[id]
+		if c.is_imposter:
+			imposters += 1
+		else:
+			crewmates += 1
+	var total = crewmates + imposters
+	if imposters == 0 and total > 0:
+		return {"game_over": true, "winner": "crewmates"}
+	elif crewmates <= imposters and total > 0:
+		return {"game_over": true, "winner": "imposters"}
+	return {"game_over": false, "winner": ""}
 
 func client_distance(client, client2):
 	var client_pos = client.tile
@@ -45,14 +103,205 @@ func get_relative_client_data(client, client2):
 		"name": client2.name
 	}
 	
+func build_prompt(client, world_view, chat_logs, bots, events=[]):
+	var prompt = BASE_PROMPT
+	prompt += "Your name is %s.\n" % client.name
+	if client.first_time:
+		prompt += "This is your first turn — introduce yourself!\n"
+		client.first_time = false
+	
+	if client.is_imposter:
+		prompt += IMPOSTOR_INSTRUCTIONS
+	else:
+		prompt += CREWMATE_INSTRUCTIONS
+	
+	# Recent game events
+	if events.size() > 0:
+		prompt += "\nRecent events:\n"
+		for ev in events:
+			var etype = ev.get("type", "")
+			if etype == "kill":
+				prompt += "- %s was killed! Witnesses: %s\n" % [ev.get("victim", "?"), str(ev.get("witnesses", []))]
+			elif etype == "eject":
+				prompt += "- %s was ejected by vote (was imposter: %s)\n" % [ev.get("victim", "?"), ev.get("was_imposter", false)]
+			elif etype == "voting_started":
+				prompt += "- Emergency meeting called! %d players voting.\n" % ev.get("players", 0)
+
+	prompt += "Your current local map view is:\n%s\n" % world_view
+	if chat_logs.size() > 0:
+		prompt += "Here are the recent chats:\n"
+		for chat_entry in chat_logs:
+			prompt += "- %s\n" % chat_entry
+	else:
+		prompt += "There are no recent chat messages.\n"
+	
+	prompt += "The bots that are visible to you are:\n"
+	if bots.size() == 0:
+		prompt += "None\n"
+	else:
+		for bot in bots:
+			prompt += "%s : %s, %s\n" % [bot.get("name", "Unknown"), bot.get("delta_x", 0), bot.get("delta_y", 0)]
+	return prompt
+
+func get_action_schema(client):
+	if game_state == State.VOTING:
+		return {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"vote": {"type": "string", "description": "Name to vote for or 'skip'"},
+				"chat": {"type": "string", "description": "Chat message to broadcast during voting"}
+			},
+			"required": ["vote"]
+		}
+	else:
+		var properties = {
+			"move_x": {"type": "integer", "description": "How many steps to move horizontally: negative for left, 0 for idle, positive for right."},
+			"move_y": {"type": "integer", "description": "How many steps to move vertically: negative for up, 0 for idle, positive for up."},
+			"chat": {"type": "string", "description": "Chat message."},
+			"reason": {"type": "string", "description": "Logic behind the move."}
+		}
+		if client.is_imposter:
+			properties["attack"] = {"type": "string", "description": "Set to 'attack' to kill the nearest bot within range. Leave empty or omit otherwise."}
+		return {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": properties,
+			"required": ["move_x", "move_y", "chat", "reason"]
+		}
+
+	
+
+func start_voting():
+	print("══════════ VOTING STARTED ══════════")
+	game_state = State.VOTING
+	state_countdown = 30.0
+	vote_choices.clear()
+	print("VOTING: %d active players must vote (30s timeout)" % game_clients.size())
+	EventLogger.log_event("voting", "start", {"active_players": game_clients.size()})
+	recent_events.append({"type": "voting_started", "players": game_clients.size()})
+
+func eject_client(victim):
+	if victim == null:
+		return
+	victim.is_active = false
+	victim.node.visible = false
+	if victim.id in game_clients:
+		game_clients.erase(victim.id)
+	EventLogger.log_event("voting", "eject", {"victim": victim.name})
+	recent_events.append({
+		"type": "eject",
+		"victim": victim.name,
+		"was_imposter": victim.is_imposter,
+	})
+	print(victim.name + " was ejected by vote")
+
+func tally_vote_totals() -> Dictionary:
+	var totals: Dictionary = {}
+	for voter_id in vote_choices.keys():
+		var voted_name = vote_choices[voter_id]
+		totals[voted_name] = totals.get(voted_name, 0) + 1
+	return totals
+
+func finalize_voting():
+	# Guard against double-finalize (can be called from _process timer and handle_action early-end)
+	if game_state != State.VOTING:
+		return
+
+	print("VOTING: Finalizing — %d votes cast, tallying..." % vote_choices.size())
+
+	var totals = tally_vote_totals()
+
+	# Announce vote counts
+	var tally_strings: Array = []
+	for vote_target in totals.keys():
+		tally_strings.append("%s (%d)" % [vote_target, totals[vote_target]])
+	if tally_strings.size() > 0:
+		broadcast_system_message("Vote results: " + ", ".join(tally_strings))
+	else:
+		broadcast_system_message("No votes were cast.")
+
+	if totals.size() == 0:
+		print("No votes cast. Resuming game.")
+		game_state = State.PLAYING
+		return
+
+	var max_votes = 0
+	var winners: Array = []
+	for key_name in totals.keys():
+		var count = totals[key_name]
+		if count > max_votes:
+			max_votes = count
+			winners = [key_name]
+		elif count == max_votes:
+			winners.append(key_name)
+
+	# Tie or skip handling
+	if winners.size() != 1:
+		broadcast_system_message("Vote tied. Nobody was ejected.")
+		print("Vote tied or ambiguous. No ejection.")
+		game_state = State.PLAYING
+		vote_choices.clear()
+		return
+
+	var voted_name = winners[0]
+	if voted_name == "skip":
+		broadcast_system_message("Players chose to skip. Nobody was ejected.")
+		print("Players skipped voting. No ejection.")
+		game_state = State.PLAYING
+		vote_choices.clear()
+		return
+
+	# Find the client with that name and eject them
+	var victim = null
+	for id in clients.keys():
+		var c = clients[id]
+		if c.name == voted_name:
+			victim = c
+			break
+
+	if victim != null:
+		eject_client(victim)
+		broadcast_system_message(victim.name + " was ejected!")
+		EventLogger.log_event("voting", "result", {"ejected": victim.name, "was_imposter": victim.is_imposter, "vote_tallies": tally_strings})
+
+		# Check win condition after ejection
+		var result = check_win_condition()
+		if result.game_over:
+			end_game(result.winner)
+			vote_choices.clear()
+			return
+	else:
+		print("Voted name not found among clients: ", voted_name)
+
+	vote_choices.clear()
+	game_state = State.PLAYING
+	print("══════════ VOTING ENDED — returning to PLAYING ══════════")
+
 func get_context_packet(agent_client):
 	var client = clients.get(agent_client.id, null)
 	if client == null:
 		print("Received action for unknown client ID: ", agent_client.id)
 		return
 
+	# Dead/inactive clients: send minimal idle context
+	if not client.is_active:
+		return {
+			"id": client.id,
+			"pos": {"x": client.tile.x, "y": client.tile.y},
+			"name": client.name,
+			"is_imposter": client.is_imposter,
+			"is_idle": true,
+			"prompt": "",
+			"action_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+			"bots": [],
+			"chat_logs": [],
+			"events": recent_events.duplicate(),
+			"world_view": "",
+		}
+
 	var id = client.id
-	var visibility_radius = 4 # Adjust this for a 5x5 grid (2*2 + 1)
+	var visibility_radius = 3  # 7x7 grid (compact — saves tokens vs 9x9)
 	
 	# 1. Fetch the tile neighborhood
 	# Assuming 'tile_map' is accessible globally or on the server node
@@ -69,32 +318,97 @@ func get_context_packet(agent_client):
 			and abs(packet.delta_y) <= visibility_radius:
 			other_bots.append(packet)
 	
-	var chat_context = client.chat_context 
+	var chat_context = client.chat_context
 	client.chat_context = []
+
+	# Keep events list bounded and snapshot for this agent
+	if recent_events.size() > 50:
+		recent_events = recent_events.slice(recent_events.size() - 50, recent_events.size())
+	var events_snapshot = recent_events.duplicate()
+
+	# Prepare defaults
+	var prompt = ""
+	var action_schema = {}
+
+	# Voting phase: broadcast all chats to everyone and provide voting schema
+	if game_state == State.VOTING:
+		# Use recent global chats for context (last 50)
+		var start_idx = max(0, recent_global_chats.size() - 50)
+		chat_context = recent_global_chats.slice(start_idx, recent_global_chats.size())
+
+		# Build a voting-specific prompt (only active players)
+		var player_names: Array = []
+		for idn in game_clients.keys():
+			player_names.append(game_clients[idn].name)
+
+		
+		var vote_prompt = VOTE_PROMPT
+		if events_snapshot.size() > 0:
+			vote_prompt += "\nRecent events:\n"
+			for ev in events_snapshot:
+				var etype = ev.get("type", "")
+				if etype == "kill":
+					vote_prompt += "- %s was killed!\n" % ev.get("victim", "?")
+				elif etype == "eject":
+					vote_prompt += "- %s was ejected (was imposter: %s)\n" % [ev.get("victim", "?"), ev.get("was_imposter", false)]
+		vote_prompt += "Players: %s\n" % String(", ").join(player_names)
+		vote_prompt += "Recent global chats:\n"
+		for c in chat_context:
+			vote_prompt += "- %s\n" % c
+
+		vote_prompt += "Current votes:\n"
+		for voter_id in vote_choices.keys():
+			var voter_name = "Unknown"
+			if voter_id in clients:
+				voter_name = clients[voter_id].name
+			vote_prompt += "%s -> %s\n" % [voter_name, vote_choices[voter_id]]
+
+		prompt = vote_prompt
+
+		action_schema = {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"vote": {"type": "string", "description": "Name to vote for or 'skip'"},
+				"chat": {"type": "string", "description": "Chat message to broadcast during voting"}
+			},
+			"required": ["vote"]
+		}
+	else:
+		prompt = build_prompt(client, neighborhood, chat_context, other_bots, events_snapshot)
+		action_schema = get_action_schema(client)
 	
+	var clear_mem = _clear_memory_flags.get(id, false)
+	if clear_mem:
+		_clear_memory_flags[id] = false
+
 	return {
 		"id": id,
 		"pos": {
-			"x": client.tile.x, 
+			"x": client.tile.x,
 			"y": client.tile.y
 		},
 		"name": client.name,
 		"bots": other_bots,
 		"world_view": neighborhood, # Ascii ART
 		"chat_logs": chat_context,
+		"events": events_snapshot,
+		"prompt": prompt,
 		"is_imposter": client.is_imposter,
-		"is_idle": client.is_active == false
+		"is_idle": client.is_active == false,
+		"action_schema": action_schema,
+		"clear_memory": clear_mem,
 	}
 
 ## Generates an ASCII representation of the tiles around a center point
 func get_ascii_world_view(center_tile: Vector2i, radius: int) -> String:
 	var ascii_grid = ""
 	
-	# 1. Define character mapping
+	# 1. Define character mapping (compact — no space padding, saves tokens)
 	var mapping = {
-		"walkable": ". ",
-		"blocked": "# ",
-		"player": "@ "
+		"walkable": ".",
+		"blocked": "#",
+		"player": "@"
 	}
 
 	# 2. Iterate through the neighborhood
@@ -137,7 +451,7 @@ func get_closest_client(client):
 		var dist = client_distance(client, client2)
 		# print("Distance:", dist)
 		if dist < closest_distance and dist < KILL_DISTANCE:
-			dist = closest_distance
+			closest_distance = dist
 			closest_client = client2
 			
 	return closest_client
@@ -146,8 +460,68 @@ func kill_client(victim, killer):
 	victim.is_active = false
 	victim.node.visible = false
 	game_clients.erase(victim.id)
-	EventLogger.log_event("combat", "kill", {"victim": victim.name, "killer": killer.name})
-	print(victim.name + " was killed by "+killer.name)
+
+	# Collect witnesses — agents within chat distance of the victim
+	var witnesses: Array = []
+	for id in game_clients.keys():
+		var c = game_clients[id]
+		if c.id != victim.id and c.id != killer.id:
+			if client_distance(victim, c) <= CHAT_DISTANCE:
+				witnesses.append(c.name)
+
+	EventLogger.log_event("combat", "kill", {
+		"victim": victim.name,
+		"killer": killer.name,
+		"witnesses": witnesses,
+	})
+	recent_events.append({
+		"type": "kill",
+		"victim": victim.name,
+		"witnesses": witnesses,
+	})
+	print(victim.name + " was killed by " + killer.name + " — witnesses: " + str(witnesses))
+
+	# Check if the kill ends the game
+	var result = check_win_condition()
+	if result.game_over:
+		end_game(result.winner)
+		return
+
+	# Trigger body-report meeting
+	broadcast_system_message(victim.name + " was found dead! Starting emergency meeting...")
+	start_voting()
+
+func handle_chat(client, message, broadcast=false):
+	message= message.strip_edges()
+	var player_node = client.node
+	var speech_bubble = player_node.get_node("SpeechBubble")
+	var char_chat = speech_bubble.get_child(0)
+	char_chat.text = message
+	speech_bubble.visible = message != ""
+
+	if message == "":
+		return
+
+	var chat_string = client.name + ": " + message
+	var color = AGENT_COLORS[client.index % AGENT_COLORS.size()]
+	var bbcode_msg = "[b][color=%s]%s[/color][/b]: %s" % [color, client.name, message]
+	chat_box.add_message(bbcode_msg)
+	recent_global_chats.append(chat_string)
+	EventLogger.log_event("chat", "say", {
+		"actor": client.name,
+		"message": message,
+		"broadcast": broadcast,
+		"pos": {"x": client.tile.x, "y": client.tile.y},
+	})
+
+	for id2 in game_clients:
+		if id2 == client.id:
+			continue
+
+		var client2 = game_clients[id2]
+		var in_distance = client_distance(client, client2) <= CHAT_DISTANCE
+		if in_distance or broadcast:
+			client2.chat_context.append(chat_string)
 	
 func handle_action(agent_client, response):
 	var client = clients.get(agent_client.id, null)
@@ -160,38 +534,54 @@ func handle_action(agent_client, response):
 
 
 	var player_node = client.node
+
+	# If we're in voting phase, disallow movement/attacks and handle votes/chat broadcasts
+	if game_state == State.VOTING:
+		if response.has("vote"):
+			var voted_name = ""
+			if typeof(response.vote) == TYPE_STRING:
+				voted_name = response.vote
+			elif response.has("vote"):
+				voted_name = str(response["vote"])
+			if voted_name == "":
+				voted_name = "skip"
+
+			vote_choices[client.id] = voted_name
+			print("VOTING: %s -> %s  (%d/%d votes)" % [client.name, voted_name, vote_choices.size(), game_clients.size()])
+			EventLogger.log_event("voting", "vote_cast", {"voter": client.name, "voted_for": voted_name, "votes_so_far": vote_choices.size(), "total_players": game_clients.size()})
+
+			# Early end: if all active players have voted, finalize immediately
+			if vote_choices.size() >= game_clients.size():
+				print("VOTING: All %d players voted — finalizing early!" % game_clients.size())
+				finalize_voting()
+
+		handle_chat(client, response.chat, true) # Broadcast chat to all during voting
+
+		# During voting, ignore movement/attack
+		return
 	if response.has("move_x") and response.has("move_y"):
 		var new_tile: Vector2i = client.tile + Vector2i(response.move_x, -response.move_y)
 		
 		if new_tile != client.tile:
 			if player_node.move_to_tile(new_tile):
 				print("Moved to", new_tile)
+				EventLogger.log_event("movement", "move", {
+					"actor": client.name,
+					"from": {"x": client.tile.x, "y": client.tile.y},
+					"to": {"x": new_tile.x, "y": new_tile.y},
+				})
 				client.tile = new_tile
 				
 	if response.has("attack") and client.is_imposter \
-		and response["attack"].to_lower() == "attack":
+		and response["attack"].to_lower() != "" \
+		and response["attack"].to_lower() != "none":
 		# Looking for closest player
 		var closest_player = get_closest_client(client)
 		if closest_player:
 			kill_client(closest_player, client)
 		
 	
-	if response.has("chat") and response.chat.strip_edges() != "":
-		# print("chatted")
-		var speech_bubble = player_node.get_node("SpeechBubble")
-		var char_chat = speech_bubble.get_child(0)
-		char_chat.text = response.chat
-		speech_bubble.visible = response.chat != ""
-
-		var chat_string = client.name + ": " + response.chat
-		var color = AGENT_COLORS[client.index % AGENT_COLORS.size()]
-		var bbcode_msg = "[b][color=%s]%s[/color][/b]: %s" % [color, client.name, response.chat]
-		chat_box.add_message(bbcode_msg, chat_string)
-
-		for id2 in game_clients:
-			var client2 = game_clients[id2]
-			if client_distance(client, client2) <= CHAT_DISTANCE and id2 != client.id:
-				client2.chat_context.append(chat_string)
+	handle_chat(client, response.chat)
 			
 		
 func register_agent(agent_client):
@@ -242,8 +632,12 @@ func set_starting_game():
 	print("Game Starting Soon!")
 	state_countdown = start_time
 		
-func end_game():
-	print("Game Over!")
+func end_game(winner: String = ""):
+	if winner != "":
+		broadcast_system_message("Game Over! " + winner.capitalize() + " win!")
+	else:
+		broadcast_system_message("Game Over!")
+	print("Game Over! Winner: ", winner if winner != "" else "timeout")
 	for id in game_clients.keys():
 		var client = game_clients[id]
 		client.is_active = false
@@ -251,8 +645,11 @@ func end_game():
 	set_starting_game()
 
 func set_start_game():
+	if clients.size() == 0:
+		return
 	game_state = State.PLAYING
 	state_countdown = max_game_length
+	recent_events.clear()
 	print("Game Starting!")
 
 	# Randomly assign imposters
@@ -268,7 +665,64 @@ func set_start_game():
 		game_clients[id] = client
 		client.is_active = true
 		client.node.visible = true
+		# Randomize spawn position each game
+		var spawn_tile = Vector2i(randi_range(1, 16), randi_range(1, 16))
+		client.tile = spawn_tile
+		client.node.set_tile_position(spawn_tile)
 		client.is_imposter = id in imposter_ids
+		_clear_memory_flags[id] = true
+
+func _update_camera(_delta):
+	# Gather world positions of all visible, active player nodes
+	var positions: Array = []
+	for id in game_clients.keys():
+		var c = game_clients[id]
+		if c.is_active and is_instance_valid(c.node) and c.node.visible:
+			positions.append(c.node.global_position)
+	# Also check any non-game_clients with visible nodes (e.g. recently killed, pre-restart)
+	for id in clients.keys():
+		var c = clients[id]
+		if not id in game_clients and is_instance_valid(c.node) and c.node.visible:
+			positions.append(c.node.global_position)
+
+	if positions.size() == 0:
+		return
+
+	# Compute bounding box
+	var min_pos = positions[0]
+	var max_pos = positions[0]
+	for pos in positions:
+		min_pos.x = min(min_pos.x, pos.x)
+		min_pos.y = min(min_pos.y, pos.y)
+		max_pos.x = max(max_pos.x, pos.x)
+		max_pos.y = max(max_pos.y, pos.y)
+
+	# Add padding
+	min_pos -= Vector2(_camera_padding, _camera_padding)
+	max_pos += Vector2(_camera_padding, _camera_padding)
+
+	# Enforce minimum world size so camera doesn't zoom in too far
+	var world_size = max_pos - min_pos
+	world_size.x = max(world_size.x, _camera_min_world_size)
+	world_size.y = max(world_size.y, _camera_min_world_size)
+
+	# Calculate target zoom to fit the world bounds in the viewport
+	var viewport_size = get_viewport().get_visible_rect().size
+	if viewport_size.x == 0 or viewport_size.y == 0:
+		return
+
+	var target_zoom_x = viewport_size.x / world_size.x
+	var target_zoom_y = viewport_size.y / world_size.y
+	var target_zoom = min(target_zoom_x, target_zoom_y)
+	target_zoom = clamp(target_zoom, _camera_min_zoom, _camera_max_zoom)
+
+	# Center of the bounding box
+	var target_pos = (min_pos + max_pos) / 2.0
+
+	# Smoothly interpolate position and zoom
+	var weight = clamp(_camera_smooth_speed * _delta, 0.0, 1.0)
+	camera.global_position = camera.global_position.lerp(target_pos, weight)
+	camera.zoom = camera.zoom.lerp(Vector2(target_zoom, target_zoom), weight)
 
 func _ready():
 	Agents.get_context_packet = get_context_packet
@@ -278,6 +732,7 @@ func _ready():
 
 func _process(_delta):
 	state_countdown -= _delta
+	_update_camera(_delta)
 
 	# print("State Countdown: ", state_countdown)
 	# print(len(clients), " clients connected.")
@@ -288,4 +743,16 @@ func _process(_delta):
 	elif game_state == State.STARTING and state_countdown <= 0:
 		set_start_game()
 	elif game_state == State.PLAYING and game_end_condition():
-		end_game()
+		var result = check_win_condition()
+		if result.game_over:
+			end_game(result.winner)
+		else:
+			end_game()
+	elif game_state == State.VOTING:
+		if state_countdown <= 0:
+			finalize_voting()
+		else:
+			var sec = int(state_countdown)
+			if sec != _last_vote_log_second and sec % 10 == 0:
+				print("VOTING: %.0fs remaining, %d/%d votes cast" % [state_countdown, vote_choices.size(), game_clients.size()])
+			_last_vote_log_second = sec
