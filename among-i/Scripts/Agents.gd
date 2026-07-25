@@ -15,6 +15,8 @@ var UPDATE_INTERVAL = 10.0 # Send data once per second
 
 var total_bots = 0
 
+var VERBOSE_SERVER_LOG = false
+
 	
 var get_context_packet: Callable
 var handle_client_action: Callable
@@ -31,10 +33,10 @@ class AgentClient:
 	var time_since_last_update: float = 0.0
 	var first_time: bool = true
 
-	func _init(_id, _socket, index):
+	func _init(_id, _socket, _index):
 		self.id = _id
 		self.socket = _socket
-		self.index = index
+		self.index = _index
 		
 
 			
@@ -67,7 +69,8 @@ func update_client(client, _delta):
 		var send_client_update = got_packet or client.first_time or client.time_since_last_update >= UPDATE_INTERVAL
 		if send_client_update:
 			var context = get_context_packet.call(client)
-			print("Sending context to client ", client.id, ": ", context)
+			if VERBOSE_SERVER_LOG:
+				print("Sending context to client ", client.id, ": ", context)
 			socket.send_text(JSON.stringify(context))
 			# print("Sent Context")
 			client.time_since_last_update = 0.0 # Reset the clock
