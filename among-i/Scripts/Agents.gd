@@ -32,6 +32,7 @@ class AgentClient:
 	# Timing for updates
 	var time_since_last_update: float = 0.0
 	var first_time: bool = true
+	var force_send: bool = false
 
 	func _init(_id, _socket, _index):
 		self.id = _id
@@ -55,18 +56,19 @@ func update_client(client, _delta):
 		var got_packet = false
 		while socket.get_available_packet_count() > 0:
 			got_packet = true
-			# print("Recieved Player Packet")
 			var packet = socket.get_packet().get_string_from_utf8()
 			var data = JSON.parse_string(packet)
-			print(data)
+			
 			if not data:
 				continue 
+				
+			print(data)
 				
 			handle_client_action.call(client, data)
 		
 		# Send current state back to the specific Python agent
 		
-		var send_client_update = got_packet or client.first_time or client.time_since_last_update >= UPDATE_INTERVAL
+		var send_client_update = got_packet or client.first_time or client.time_since_last_update >= UPDATE_INTERVAL or client.force_send
 		if send_client_update:
 			var context = get_context_packet.call(client)
 			if VERBOSE_SERVER_LOG:
@@ -75,6 +77,7 @@ func update_client(client, _delta):
 			# print("Sent Context")
 			client.time_since_last_update = 0.0 # Reset the clock
 			client.first_time = false
+			client.force_send = false
 		
 	elif state == WebSocketPeer.STATE_CLOSED:
 		print("Client disconnected. Removing player.")
@@ -107,6 +110,10 @@ func _process(_delta):
 
 		
 	
+	func force_send_all() -> void:
+		for id in clients.keys():
+			clients[id].force_send = true
+
 	# 2. Update all connected clients
 	for id in clients.keys():
 		update_client(clients[id], _delta)

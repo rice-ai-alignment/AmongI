@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Among-I Log Viewer</title>
+<style>
+:root {
+  --bg: #1a1a18; --bg2: #242422; --bg3: #2c2c2a; --border: #3a3a38;
+  --text: #f0ede8; --text2: #a0a09a; --text3: #666660;
+  --blue: #85B7EB; --blue-bg: #042C53; --blue-t: #B5D4F4;
+  --red: #F0997B; --red-bg: #4A1B0C; --red-t: #F5C4B3;
+  --green: #5DCAA5; --green-bg: #04342C; --green-t: #9FE1CB;
+  --amber: #EF9F27; --amber-bg: #412402; --amber-t: #FAC775;
+  --purple: #AFA9EC; --purple-bg: #26215C; --purple-t: #CECBF6;
+  --gray: #B4B2A9; --gray-bg: #2C2C2A; --gray-t: #D3D1C7;
+}
+* { box-sizing: border-box; margin: 0; padding: 0 }
+body { font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg); color: var(--text); height: 100vh; overflow: hidden;
+  display: grid; grid-template-columns: 240px 1fr 320px; }
+/* Sidebar */
+#sidebar { background: var(--bg2); border-right: 1px solid var(--border);
+  overflow-y: auto; display: flex; flex-direction: column; }
+#sidebar h3 { padding: 12px 14px 6px; font-size: 10px; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .06em; }
+.sess-btn { display: block; width: 100%; padding: 8px 14px; border: none;
+  background: none; color: var(--text2); font-size: 12px; cursor: pointer;
+  text-align: left; border-left: 3px solid transparent; }
+.sess-btn:hover { background: var(--bg3); }
+.sess-btn.active { color: var(--text); border-left-color: var(--blue); background: var(--bg3); }
+#agent-list { flex: 1; overflow-y: auto; }
+.agent-chip { display: flex; align-items: center; gap: 8px; padding: 6px 14px;
+  cursor: pointer; border: none; background: none; color: var(--text2); font-size: 12px;
+  width: 100%; text-align: left; }
+.agent-chip:hover, .agent-chip.sel { color: var(--text); background: var(--bg3); }
+.agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.agent-badge { font-size: 10px; padding: 1px 5px; border-radius: 8px; margin-left: auto; }
+.agent-badge.imp { background: var(--red-bg); color: var(--red); }
+/* Center timeline */
+#timeline { overflow-y: auto; padding: 12px 16px; }
+.event-row { display: flex; gap: 10px; padding: 4px 0; align-items: flex-start;
+  border-radius: 6px; cursor: pointer; }
+.event-row:hover { background: var(--bg2); }
+.ev-time { font-size: 10px; color: var(--text3); min-width: 52px; text-align: right;
+  padding-top: 2px; font-variant-numeric: tabular-nums; }
+.ev-icon { width: 24px; height: 24px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; }
+.ev-body { min-width: 0; flex: 1; }
+.ev-title { font-size: 12px; }
+.ev-title b { cursor: pointer; }
+.ev-title b:hover { text-decoration: underline; }
+.ev-detail { font-size: 11px; color: var(--text3); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+/* Game recap card */
+.recap-card { margin: 10px 0; padding: 12px 14px; background: var(--bg2);
+  border: 1px solid var(--border); border-radius: 8px; }
+.recap-card h4 { font-size: 13px; margin-bottom: 6px; }
+.recap-card .winner { font-size: 12px; margin-bottom: 4px; }
+.recap-player { display: inline-flex; gap: 4px; align-items: center;
+  padding: 2px 8px; font-size: 11px; background: var(--bg3); border-radius: 4px; margin: 2px; }
+.recap-player.dead { opacity: 0.4; }
+/* Right panel */
+#inspector { background: var(--bg2); border-left: 1px solid var(--border);
+  overflow-y: auto; padding: 14px; display: flex; flex-direction: column; }
+#inspector h3 { font-size: 13px; margin-bottom: 10px; }
+#inspector .empty { color: var(--text3); text-align: center; padding-top: 40px; }
+.stat-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
+.stat-row label { color: var(--text3); }
+.ins-event { padding: 4px 0; font-size: 11px; border-bottom: 1px solid var(--border); }
+.ins-event .time { color: var(--text3); font-size: 10px; }
+/* Header */
+#header { padding: 8px 14px; background: var(--bg); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 12px; grid-column: 1 / -1; }
+#header h1 { font-size: 14px; }
+#header span { font-size: 11px; color: var(--text3); }
+/* Category colors */
+.c-chat { color: var(--blue); } .bg-chat { background: var(--blue-bg); }
+.c-combat { color: var(--red); } .bg-combat { background: var(--red-bg); }
+.c-movement { color: var(--green); } .bg-movement { background: var(--green-bg); }
+.c-voting { color: var(--purple); } .bg-voting { background: var(--purple-bg); }
+.c-system { color: var(--gray); } .bg-system { background: var(--gray-bg); }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>🎮 Among-I Log Viewer</h1>
+  <span id="hinfo">Loading…</span>
+</div>
+
+<div id="sidebar">
+  <h3>Sessions</h3>
+  <div id="sess-list"></div>
+  <h3>Agents</h3>
+  <div id="agent-list"><div style="padding:14px;color:var(--text3)">Select a session…</div></div>
+</div>
+
+<div id="timeline"><div style="padding:40px;text-align:center;color:var(--text3)">Select a session from the left to begin.</div></div>
+
+<div id="inspector">
+  <div class="empty">Click an agent name or event to inspect</div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const API = "/api";
+
+const CAT = {
+  chat:     { color: "var(--blue)",   bg: "var(--blue-bg)",   icon: "💬" },
+  combat:   { color: "var(--red)",    bg: "var(--red-bg)",    icon: "⚔" },
+  movement: { color: "var(--green)",  bg: "var(--green-bg)",  icon: "🏃" },
+  voting:   { color: "var(--purple)", bg: "var(--purple-bg)", icon: "🗳" },
+  system:   { color: "var(--gray)",   bg: "var(--gray-bg)",   icon: "⚙" },
+};
+function ci(cat) { return CAT[cat] || CAT.system; }
+
+let state = { sessions: [], current: null, events: [], agentFilter: null };
+
+async function loadJSON(url) {
+  const r = await fetch(url);
+  return r.ok ? r.json() : null;
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+async function init() {
+  state.sessions = await loadJSON(`${API}/sessions`) || [];
+  renderSessions();
+  if (state.sessions.length > 0) selectSession(state.sessions[0].id);
+  $("#hinfo").textContent = `${state.sessions.length} sessions`;
+}
+
+function renderSessions() {
+  const el = $("#sess-list");
+  el.innerHTML = state.sessions.map(s =>
+    `<button class="sess-btn${state.current?.id === s.id ? ' active' : ''}"
+      onclick="selectSession('${s.id}')">${fmtSid(s.id)}</button>`
+  ).join("");
+}
+
+function fmtSid(sid) {
+  return sid.replace("SESSION-", "").replace("T", " ");
+}
+
+// ── Session loading ───────────────────────────────────────────────
+async function selectSession(sid) {
+  const data = await loadJSON(`${API}/sessions/${encodeURIComponent(sid)}`);
+  if (!data) return;
+  state.current = data;
+  state.events = data.events;
+  state.agentFilter = null;
+  renderSessions();
+  renderTimeline();
+  renderAgentList();
+  $("#inspector").innerHTML = '<div class="empty">Click an agent name or event to inspect</div>';
+}
+
+function renderAgentList() {
+  const names = new Set();
+  for (const e of state.events) {
+    const a = e.actor || e.voter || e.killer || e.victim || e.voted_for || "";
+    if (a && a.length < 30) names.add(a);
+  }
+  // Also from recaps
+  for (const e of state.events) {
+    if (e.type === "game_end" && e.recap?.players) {
+      for (const p of e.recap.players) names.add(p.name);
+    }
+  }
+  const colors = ["#C51111","#132ED2","#117F2D","#ED54BB","#EF7D0E","#C8CD00","#3F474E",
+                  "#D85A30","#378ADD","#1D9E75"];
+  let html = "";
+  let i = 0;
+  for (const name of [...names].sort()) {
+    const sel = state.agentFilter === name ? " sel" : "";
+    const c = colors[i++ % colors.length];
+    html += `<button class="agent-chip${sel}" onclick="filterAgent('${esc(name)}')">
+      <span class="agent-dot" style="background:${c}"></span>${escHtml(name)}</button>`;
+  }
+  $("#agent-list").innerHTML = html || '<div style="padding:14px;color:var(--text3)">No agents</div>';
+}
+
+function filterAgent(name) {
+  state.agentFilter = state.agentFilter === name ? null : name;
+  renderAgentList();
+  renderTimeline();
+}
+
+function esc(s) { return s.replace(/'/g, "\\'").replace(/"/g, "&quot;"); }
+function escHtml(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+// ── Timeline ──────────────────────────────────────────────────────
+function renderTimeline() {
+  const tl = $("#timeline");
+  if (!state.events.length) {
+    tl.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">No events in this session</div>';
+    return;
+  }
+
+  // Find game boundaries for recap cards
+  const gameStarts = {}, gameEnds = {};
+  for (const e of state.events) {
+    if (e.type === "game_start") gameStarts[e.game_id] = e;
+    if (e.type === "game_end") gameEnds[e.game_id] = e;
+  }
+
+  const filtered = state.agentFilter
+    ? state.events.filter(e => {
+        const names = [e.actor, e.voter, e.killer, e.victim, e.voted_for, e.name];
+        return names.some(n => n === state.agentFilter);
+      })
+    : state.events;
+
+  let html = "";
+  let lastGameId = null;
+  for (const e of filtered) {
+    // Insert game recap card at game end
+    if (e.game_id && e.type === "game_end" && e.recap) {
+      html += renderRecap(e.game_id, e.recap);
+      lastGameId = e.game_id;
+      continue;
+    }
+
+    // Skip pure system events for cleanliness (except session_start/end)
+    if (e.category === "system" && e.type !== "session_start" && e.type !== "session_end")
+      continue;
+
+    const cat = ci(e.category);
+    const ts = (e.elapsed_ms / 1000).toFixed(1);
+    const mins = Math.floor(ts / 60), secs = ts % 60;
+    const timeStr = `${String(mins).padStart(2,'0')}:${String(Math.floor(secs)).padStart(2,'0')}`;
+
+    html += `<div class="event-row" onclick="inspectEvent(event)" data-event='${esc(JSON.stringify(e))}'>
+      <div class="ev-time">${timeStr}</div>
+      <div class="ev-icon bg-${e.category}" style="color:${cat.color}">${cat.icon}</div>
+      <div class="ev-body">
+        <div class="ev-title">${formatTitle(e)}</div>
+        <div class="ev-detail">${formatDetail(e)}</div>
+      </div>
+    </div>`;
+  }
+
+  tl.innerHTML = html;
+}
+
+function renderRecap(gid, recap) {
+  const winner = recap.winner || "?";
+  const wColor = winner === "crewmates" ? "var(--green)" :
+                 winner === "imposters" ? "var(--red)" : "var(--amber)";
+  let players = "";
+  for (const p of (recap.players || [])) {
+    const dead = p.alive === false ? " dead" : "";
+    const imp = p.imposter ? "IMPOSTER" : "crew";
+    players += `<span class="recap-player${dead}">${escHtml(p.name)} <small style="color:var(--text3)">${imp}</small></span>`;
+  }
+  return `<div class="recap-card">
+    <h4>🎯 ${gid} — Game Over</h4>
+    <div class="winner" style="color:${wColor};font-weight:600">${winner} win</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:4px">
+      ${recap.kills || 0} kills · ${recap.ejections || 0} ejections
+    </div>
+    <div>${players}</div>
+  </div>`;
+}
+
+function formatTitle(e) {
+  const c = ci(e.category);
+  const color = c.color;
+  switch (e.type) {
+    case "say":
+      return `<b style="color:${color}" onclick="event.stopPropagation();inspectAgent('${esc(e.actor || '')}')">${escHtml(e.actor || '?')}</b>`;
+    case "kill":
+      return `<span style="color:${color}">Kill:</span> <b onclick="event.stopPropagation();inspectAgent('${esc(e.victim || '')}')">${escHtml(e.victim || '?')}</b> was killed`;
+    case "move":
+      return `<span style="color:${color}">Move:</span> <b onclick="event.stopPropagation();inspectAgent('${esc(e.actor || '')}')">${escHtml(e.actor || '?')}</b> → (${e.to?.x},${e.to?.y})`;
+    case "vote_cast":
+      return `<span style="color:${color}">Vote:</span> <b onclick="event.stopPropagation();inspectAgent('${esc(e.voter || '')}')">${escHtml(e.voter || '?')}</b> → ${escHtml(e.voted_for || '?')}`;
+    case "eject":
+      return `<span style="color:${color}">Eject:</span> <b>${escHtml(e.victim || '?')}</b> was ejected`;
+    case "start":
+      return `<span style="color:${color}">🗳 Voting started</span> — ${e.active_players || e.players || '?'} players`;
+    case "session_start":
+      return `<span style="color:${color}">▶ Session started</span>`;
+    case "session_end":
+      return `<span style="color:${color}">⏹ Session ended</span>`;
+    case "game_start":
+      return `<span style="color:${color}">🎮 ${e.game_id || ''} started</span>`;
+    case "game_end":
+      return `<span style="color:${color}">🏁 ${e.game_id || ''} ended</span>`;
+    case "result":
+      return `<span style="color:${color}">📊 Vote result:</span> ${escHtml(e.ejected || '?')} ejected (was imposter: ${e.was_imposter})`;
+    default:
+      return `<span style="color:${color}">${e.category}/${e.type}</span>`;
+  }
+}
+
+function formatDetail(e) {
+  switch (e.type) {
+    case "say": return `"${escHtml((e.message || '').slice(0, 100))}"`;
+    case "kill": return `Killer: ${escHtml(e.killer || '?')} · Witnesses: ${(e.witnesses || []).join(', ') || 'none'}`;
+    case "move": return `From (${e.from?.x},${e.from?.y}) → (${e.to?.x},${e.to?.y})`;
+    case "vote_cast": return `${e.votes_so_far || 0}/${e.total_players || 0} votes cast`;
+    case "eject": return ``;
+    case "start": return ``;
+    default: return "";
+  }
+}
+
+// ── Inspector ─────────────────────────────────────────────────────
+function inspectAgent(name) {
+  if (!name) return;
+  state.agentFilter = name;
+  renderAgentList();
+  renderTimeline();
+  renderInspector(name);
+}
+
+function inspectEvent(ev) {
+  try {
+    const e = JSON.parse(ev.currentTarget.dataset.event);
+    // If chat event, inspect the actor
+    const agent = e.actor || e.voter || e.killer || e.victim || "";
+    if (agent) inspectAgent(agent);
+  } catch {}
+}
+
+function renderInspector(name) {
+  const el = $("#inspector");
+  const myEvents = state.events.filter(e => {
+    const names = [e.actor, e.voter, e.killer, e.victim, e.voted_for, e.name];
+    return names.some(n => n === name);
+  });
+
+  // Find role from recap
+  let role = "unknown", alive = null;
+  for (const e of state.events) {
+    if (e.type === "game_end" && e.recap?.players) {
+      const p = e.recap.players.find(p => p.name === name);
+      if (p) { role = p.imposter ? "IMPOSTER" : "crewmate"; alive = p.alive; }
+    }
+  }
+
+  const chats = myEvents.filter(e => e.type === "say").length;
+  const moves = myEvents.filter(e => e.type === "move").length;
+  const kills = myEvents.filter(e => e.type === "kill" && e.killer === name).length;
+  const deaths = myEvents.filter(e => e.type === "kill" && e.victim === name).length;
+  const votes = myEvents.filter(e => e.type === "vote_cast" && e.voter === name);
+  const ejected = myEvents.filter(e => e.type === "eject" && e.victim === name).length;
+
+  let html = `<h3>🔍 ${escHtml(name)}</h3>`;
+  html += `<div style="margin-bottom:10px">`;
+  html += `<span class="agent-badge ${role === 'IMPOSTER' ? 'imp' : ''}" style="font-size:12px;padding:3px 8px">${role}</span>`;
+  if (alive !== null) html += ` <span style="font-size:11px;color:var(--text3)">${alive ? 'survived' : 'died'}</span>`;
+  html += `</div>`;
+
+  html += `<div class="stat-row"><label>Chats</label><span>${chats}</span></div>`;
+  html += `<div class="stat-row"><label>Moves</label><span>${moves}</span></div>`;
+  html += `<div class="stat-row"><label>Kills</label><span>${kills}</span></div>`;
+  html += `<div class="stat-row"><label>Times killed</label><span>${deaths}</span></div>`;
+  html += `<div class="stat-row"><label>Times ejected</label><span>${ejected}</span></div>`;
+
+  if (votes.length > 0) {
+    html += `<div style="margin-top:10px;font-size:12px;color:var(--text3)">Votes cast:</div>`;
+    for (const v of votes) {
+      html += `<div class="ins-event"><span class="time">${(v.elapsed_ms/1000).toFixed(0)}s</span> — Voted for <b>${escHtml(v.voted_for || '?')}</b></div>`;
+    }
+  }
+
+  // Chat samples
+  const chatSamples = myEvents.filter(e => e.type === "say").slice(-15);
+  if (chatSamples.length > 0) {
+    html += `<div style="margin-top:10px;font-size:12px;color:var(--text3)">Recent chats:</div>`;
+    for (const c of chatSamples) {
+      html += `<div class="ins-event"><span class="time">${(c.elapsed_ms/1000).toFixed(0)}s</span> — "${escHtml((c.message || '').slice(0, 80))}"</div>`;
+    }
+  }
+
+  el.innerHTML = html;
+}
+
+// Periodic refresh
+let refreshTimer = null;
+function startRefresh() {
+  refreshTimer = setInterval(async () => {
+    if (!state.current) return;
+    const data = await loadJSON(`${API}/sessions/${encodeURIComponent(state.current.id)}`);
+    if (data && data.events.length !== state.events.length) {
+      state.events = data.events;
+      state.current = data;
+      renderTimeline();
+      renderAgentList();
+    }
+  }, 3000);
+}
+
+init().then(startRefresh);
+</script>
+</body>
+</html>

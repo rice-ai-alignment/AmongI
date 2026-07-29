@@ -13,6 +13,14 @@ var _buffer: Array = []
 var _flush_interval_sec: float = 5.0
 var _flush_timer: float = 0.0
 
+# Per-game logging
+var _game_id: String = ""
+var _game_count: int = 0
+var _game_file: FileAccess = null
+var _game_log_path: String = ""
+var _game_event_count: int = 0
+var _game_start_usec: int = 0
+
 # Emitted so UI/other systems can react without polling the file
 signal event_logged(event: Dictionary)
 
@@ -38,16 +46,46 @@ func _process(delta: float) -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_CRASH:
 		log_event("system", "session_end", {"event_count": _event_count})
+		_close_game_log()
 		_flush(true)
+
+# ─── Game lifecycle ─────────────────────────────────────────────────────────
+
+func start_game() -> void:
+	_close_game_log()
+	_game_count += 1
+	_game_id = "GAME-%03d" % _game_count
+	_game_event_count = 0
+	_game_start_usec = Time.get_ticks_usec()
+
+	# Create per-game log directory and file
+	var game_dir = "res://logs/%s" % _session_id
+	DirAccess.make_dir_recursive_absolute(game_dir)
+	_game_log_path = "%s/%s.jsonl" % [game_dir, _game_id]
+	_game_file = FileAccess.open(_game_log_path, FileAccess.WRITE)
+	if _game_file == null:
+		push_error("EventLogger: could not open game log at %s" % _game_log_path)
+
+	log_event("system", "game_start", {"game_id": _game_id})
+
+func end_game(recap: Dictionary) -> void:
+	log_event("system", "game_end", {
+		"game_id": _game_id,
+		"recap": recap,
+	})
+	_flush(true)
+	_close_game_log()
+
+func _close_game_log() -> void:
+	if _game_file != null:
+		_game_file.flush()
+		_game_file.close()
+		_game_file = null
+	_game_id = ""
+	_game_log_path = ""
 
 # ─── Core logging ────────────────────────────────────────────────────────────
 
-## Log any event.
-## category: "chat" | "combat" | "movement" | "item" | "quest" | "system" | anything
-## type:     snake_case verb, e.g. "say", "attack", "pickup"
-## actor:    player name / entity id
-## data:     arbitrary dict — keep it flat for easy querying
-## witnesses: array of player names who were close enough to observe
 func log_event(
 	category: String,
 	type: String,
@@ -62,20 +100,31 @@ func log_event(
 		"category": category,
 		"type": type
 	}
+	if _game_id != "":
+		event["game_id"] = _game_id
+		event["game_event_id"] = _game_event_count
+		_game_event_count += 1
 	event.merge(data)
 	_event_count += 1
+
+	# Session log
 	_buffer.append(event)
 	event_logged.emit(event)
 	if _buffer.size() >= 20:
 		_flush()
+
+	# Game log (immediate write to keep per-game file consistent)
+	if _game_file != null:
+		_game_file.store_line(JSON.stringify(event))
+
 	return event
 
 # ─── Internal ─────────────────────────────────────────────────────────────────
 
 func _flush(force: bool = false) -> void:
 	if _file == null or _buffer.is_empty(): return
-	for event in _buffer:
-		_file.store_line(JSON.stringify(event))
+	for ev in _buffer:
+		_file.store_line(JSON.stringify(ev))
 	_buffer.clear()
 	if force:
 		_file.flush()
@@ -85,3 +134,6 @@ func get_log_path() -> String:
 
 func get_session_id() -> String:
 	return _session_id
+
+func get_game_id() -> String:
+	return _game_id
