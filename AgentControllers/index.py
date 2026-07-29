@@ -234,7 +234,17 @@ async def agent_node(game_data, index, personality,):
 
     name = game_data.get("name", "?")
     is_imposter = input_state["is_imposter"]
-    is_voting = game_data.get("action_schema", {}).get("properties", {}).get("vote") is not None
+
+    # Detect phase and schema info
+    action_schema = game_data.get("action_schema", {})
+    schema_props = action_schema.get("properties", {})
+    is_voting = "vote" in schema_props
+    is_empty_schema = len(schema_props) == 0
+
+    # Skip LLM call when schema is empty (near-timeout, waiting for phase end)
+    if is_empty_schema:
+        print(f"[{name}] Skipping LLM — empty action schema (phase transition / near-timeout)")
+        return {}
 
     # Log game events (kills, ejections, etc.)
     for ev in game_data.get("events", []):
@@ -322,6 +332,10 @@ async def run_agent(personality, node):
                 print(game_data.get("bots", []))
 
             decision = await node(game_data, index, personality)
+
+            # Echo phase_id so server can void stale responses
+            if decision is not None and "phase_id" in game_data:
+                decision["phase_id"] = game_data["phase_id"]
 
             # 3. Send back
             await websocket.send(json.dumps(decision))

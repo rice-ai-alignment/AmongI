@@ -57,12 +57,20 @@ enum State {WAITING_FOR_PLAYERS, STARTING, PLAYING, VOTING}
 
 # Server State
 var game_state = State.WAITING_FOR_PLAYERS
-var state_countdown = 0.0
+var _state_timer = 0.0     # countdown for STARTING and VOTING phases
+var _game_timer = 0.0      # countdown for PLAYING phase (game length)
 var recent_global_chats: Array = []
 var recent_events: Array = []
 var vote_choices: Dictionary = {}
+var _game_kills: int = 0
+var _game_ejections: int = 0
+var _phase_id: int = 0
 var _last_vote_log_second: int = -1
 var _clear_memory_flags: Dictionary = {}
+
+func _bump_phase() -> void:
+	_phase_id += 1
+	Agents.force_send_all()
 
 func broadcast_system_message(message: String) -> void:
 	var bbcode = "[b][color=#FFFFFF]SYSTEM[/color][/b]: " + message
@@ -175,7 +183,8 @@ func get_action_schema(client):
 func start_voting():
 	print("══════════ VOTING STARTED ══════════")
 	game_state = State.VOTING
-	state_countdown = 30.0
+	_state_timer = 30.0
+	_bump_phase()
 	vote_choices.clear()
 	print("VOTING: %d active players must vote (30s timeout)" % game_clients.size())
 	EventLogger.log_event("voting", "start", {"active_players": game_clients.size()})
@@ -189,6 +198,7 @@ func eject_client(victim):
 	if victim.id in game_clients:
 		game_clients.erase(victim.id)
 	EventLogger.log_event("voting", "eject", {"victim": victim.name})
+	_game_ejections += 1
 	recent_events.append({
 		"type": "eject",
 		"victim": victim.name,
@@ -223,6 +233,7 @@ func finalize_voting():
 
 	if totals.size() == 0:
 		print("No votes cast. Resuming game.")
+		_bump_phase()
 		game_state = State.PLAYING
 		return
 
@@ -240,6 +251,7 @@ func finalize_voting():
 	if winners.size() != 1:
 		broadcast_system_message("Vote tied. Nobody was ejected.")
 		print("Vote tied or ambiguous. No ejection.")
+		_bump_phase()
 		game_state = State.PLAYING
 		vote_choices.clear()
 		return
@@ -248,6 +260,7 @@ func finalize_voting():
 	if voted_name == "skip":
 		broadcast_system_message("Players chose to skip. Nobody was ejected.")
 		print("Players skipped voting. No ejection.")
+		_bump_phase()
 		game_state = State.PLAYING
 		vote_choices.clear()
 		return
@@ -275,6 +288,7 @@ func finalize_voting():
 		print("Voted name not found among clients: ", voted_name)
 
 	vote_choices.clear()
+	_bump_phase()
 	game_state = State.PLAYING
 	print("══════════ VOTING ENDED — returning to PLAYING ══════════")
 
@@ -298,6 +312,7 @@ func get_context_packet(agent_client):
 			"chat_logs": [],
 			"events": recent_events.duplicate(),
 			"world_view": "",
+			"phase_id": _phase_id,
 		}
 
 	var id = client.id
@@ -332,6 +347,24 @@ func get_context_packet(agent_client):
 
 	# Voting phase: broadcast all chats to everyone and provide voting schema
 	if game_state == State.VOTING:
+		# Near timeout — don't waste tokens, agent won't have time to respond
+		if _state_timer < 5.0:
+			return {
+				"id": id,
+				"pos": {"x": client.tile.x, "y": client.tile.y},
+				"name": client.name,
+				"bots": [],
+				"world_view": "",
+				"chat_logs": [],
+				"events": events_snapshot,
+				"prompt": "Voting almost over. Wait for results.",
+				"is_imposter": client.is_imposter,
+				"is_idle": false,
+				"action_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+				"clear_memory": false,
+				"phase_id": _phase_id,
+			}
+
 		# Use recent global chats for context (last 50)
 		var start_idx = max(0, recent_global_chats.size() - 50)
 		chat_context = recent_global_chats.slice(start_idx, recent_global_chats.size())
@@ -398,6 +431,7 @@ func get_context_packet(agent_client):
 		"is_idle": client.is_active == false,
 		"action_schema": action_schema,
 		"clear_memory": clear_mem,
+		"phase_id": _phase_id,
 	}
 
 ## Generates an ASCII representation of the tiles around a center point
@@ -474,6 +508,7 @@ func kill_client(victim, killer):
 		"killer": killer.name,
 		"witnesses": witnesses,
 	})
+	_game_kills += 1
 	recent_events.append({
 		"type": "kill",
 		"victim": victim.name,
@@ -532,6 +567,10 @@ func handle_action(agent_client, response):
 	if client.is_active == false:
 		return
 
+	# Void stale responses from a previous phase
+	if response.has("phase_id") and response["phase_id"] != _phase_id:
+		print("Voiding stale response from ", client.name, " (phase ", response["phase_id"], " != ", _phase_id, ")")
+		return
 
 	var player_node = client.node
 
@@ -615,41 +654,69 @@ func remove_agent(agent_client):
 
 
 func game_end_condition():
-	var crewmates = 0 
-	var imposters = 0
-
+	# Timer-based end
+	if _game_timer <= 0:
+		return true
+	# Player-count-based end (all crewmates dead)
+	if game_clients.size() == 0:
+		return false
+	var crewmates = 0
 	for id in game_clients.keys():
-		var client = game_clients[id]
-		if client.is_imposter:
-			imposters += 1
-		else:
+		if not game_clients[id].is_imposter:
 			crewmates += 1
-	
-	return (crewmates <= imposters and (crewmates+imposters) > 0) or state_countdown < 0
+	return crewmates <= 0
 
 func set_starting_game():
 	game_state = State.STARTING
 	print("Game Starting Soon!")
-	state_countdown = start_time
+	_state_timer = start_time
+	_bump_phase()
 		
-func end_game(winner: String = ""):
-	if winner != "":
-		broadcast_system_message("Game Over! " + winner.capitalize() + " win!")
+func end_game(reason: String = ""):
+	if reason == "crewmates":
+		broadcast_system_message("Game Over! Crewmates win — all imposters eliminated!")
+	elif reason == "imposters":
+		broadcast_system_message("Game Over! Imposters win — all crewmates eliminated!")
+	elif reason == "timeout":
+		broadcast_system_message("Game Over! Time limit reached.")
 	else:
-		broadcast_system_message("Game Over!")
-	print("Game Over! Winner: ", winner if winner != "" else "timeout")
+		broadcast_system_message("Game Over! " + reason)
+	print("Game Over! Reason: ", reason if reason != "" else "unknown")
+
+	# Build player list with roles
+	var players: Array = []
+	for id in clients.keys():
+		var c = clients[id]
+		players.append({
+			"name": c.name,
+			"imposter": c.is_imposter,
+			"alive": c.is_active,
+		})
+
+	var recap := {
+		"winner": reason,
+		"kills": _game_kills,
+		"ejections": _game_ejections,
+		"players": players,
+	}
+
 	for id in game_clients.keys():
 		var client = game_clients[id]
 		client.is_active = false
 
+	EventLogger.end_game(recap)
 	set_starting_game()
 
 func set_start_game():
 	if clients.size() == 0:
 		return
 	game_state = State.PLAYING
-	state_countdown = max_game_length
+	_game_timer = max_game_length
 	recent_events.clear()
+	_game_kills = 0
+	_game_ejections = 0
+	_bump_phase()
+	EventLogger.start_game()
 	print("Game Starting!")
 
 	# Randomly assign imposters
@@ -731,28 +798,31 @@ func _ready():
 	Agents.remove_client = remove_agent
 
 func _process(_delta):
-	state_countdown -= _delta
-	_update_camera(_delta)
+	# Decrement the appropriate timer based on game state
+	if game_state == State.PLAYING:
+		_game_timer -= _delta
+	elif game_state == State.STARTING or game_state == State.VOTING:
+		_state_timer -= _delta
 
-	# print("State Countdown: ", state_countdown)
-	# print(len(clients), " clients connected.")
+	_update_camera(_delta)
 
 	if game_state == State.WAITING_FOR_PLAYERS and len(clients) >= min_players:
 		print("Minimum players reached. Starting game soon!")
 		set_starting_game()
-	elif game_state == State.STARTING and state_countdown <= 0:
+	elif game_state == State.STARTING and _state_timer <= 0:
 		set_start_game()
 	elif game_state == State.PLAYING and game_end_condition():
 		var result = check_win_condition()
+		var reason = "timeout" if _game_timer <= 0 else result.winner
 		if result.game_over:
 			end_game(result.winner)
 		else:
-			end_game()
+			end_game(reason)
 	elif game_state == State.VOTING:
-		if state_countdown <= 0:
+		if _state_timer <= 0:
 			finalize_voting()
 		else:
-			var sec = int(state_countdown)
+			var sec = int(_state_timer)
 			if sec != _last_vote_log_second and sec % 10 == 0:
-				print("VOTING: %.0fs remaining, %d/%d votes cast" % [state_countdown, vote_choices.size(), game_clients.size()])
+				print("VOTING: %.0fs remaining, %d/%d votes cast" % [_state_timer, vote_choices.size(), game_clients.size()])
 			_last_vote_log_second = sec
