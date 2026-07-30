@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>among-i // match stats</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="prompt">$</span> among-i<span class="cursor">_</span>
+      <span class="tagline">// match stats</span>
+    </div>
+
+    <div class="conn">
+      <label class="field">
+        <span>endpoint</span>
+        <input id="endpointInput" type="text" placeholder="http://localhost:8080/games.json" autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="field field-narrow">
+        <span>every</span>
+        <select id="intervalSelect">
+          <option value="5">5s</option>
+          <option value="10" selected>10s</option>
+          <option value="30">30s</option>
+          <option value="60">60s</option>
+          <option value="0">manual</option>
+        </select>
+      </label>
+      <button id="pingBtn" class="btn">ping now</button>
+      <button id="sampleBtn" class="btn btn-ghost">load sample</button>
+      <button id="clearBtn" class="btn btn-ghost">clear</button>
+      <button id="themeBtn" class="btn btn-icon" title="toggle theme" aria-label="toggle theme">◐</button>
+    </div>
+
+    <div class="status-row">
+      <span class="status-light" id="statusLight"></span>
+      <span id="statusText" class="status-text">idle — no endpoint configured</span>
+      <span id="lastSync" class="status-text muted"></span>
+    </div>
+  </header>
+
+  <main>
+    <section class="block" id="overview">
+      <h2><span class="idx">01</span> overview</h2>
+      <div class="tiles" id="tiles"><!-- filled by JS --></div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span>win distribution</span>
+          <span class="muted" id="totalGamesLabel">0 games</span>
+        </div>
+        <div class="chart" id="winChart"></div>
+      </div>
+    </section>
+
+    <section class="block" id="leaderboard">
+      <h2><span class="idx">02</span> players</h2>
+      <div class="panel table-panel">
+        <table id="playerTable">
+          <thead>
+            <tr>
+              <th>player</th>
+              <th>games</th>
+              <th>wins</th>
+              <th>win rate</th>
+              <th>times imposter</th>
+              <th>kills</th>
+            </tr>
+          </thead>
+          <tbody id="playerTableBody"></tbody>
+        </table>
+        <div class="empty" id="playerEmpty">no data yet — ping the server or load sample data</div>
+      </div>
+    </section>
+
+    <section class="block" id="log">
+      <h2><span class="idx">03</span> match log</h2>
+      <div class="panel">
+        <div class="feed" id="feed"></div>
+        <div class="empty" id="feedEmpty">$ waiting for match data...</div>
+      </div>
+    </section>
+  </main>
+
+  <div class="tooltip" id="tooltip" role="tooltip"></div>
+
+  <footer class="footnote">
+    schema + setup notes: <code>dashboard/GAME_RESULT_SCHEMA.md</code>
+  </footer>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
