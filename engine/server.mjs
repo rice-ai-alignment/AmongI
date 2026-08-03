@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const PORT = parseInt(process.env.PORT || "3000");
 const LOGS_DIR = process.env.LOGS_DIR || join(
-  fileURLToPath(import.meta.url), "..", "..", "among-i", "logs"
+  fileURLToPath(import.meta.url), "..", "..", "log"
 );
 const PUBLIC_DIR = join(fileURLToPath(import.meta.url), "..", "public");
 
