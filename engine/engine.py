@@ -23,6 +23,7 @@ import random
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -50,12 +51,13 @@ VERBOSE = os.getenv("VERBOSE", "0").strip() == "1"
 class GameConfig:
     kill_distance: int = 3
     chat_distance: int = 10000
+    witness_distance: int = 5
     start_countdown: float = 5.0
     game_max_length: float = 600.0
     vote_timeout: float = 30.0
     min_vote_time: float = 15.0
     imposter_count: int = 1
-    visibility_radius: int = 3
+    visibility_radius: int = 5
     agent_tick_interval: float = 3.0
     near_timeout_threshold: float = 5.0
     player_count: int = 5
@@ -223,6 +225,7 @@ class GameEngine:
         self._tick: int = 0
         self._game_kills: int = 0
         self._game_ejections: int = 0
+        self._player_kills: dict[int, int] = {}
 
         self.vote_choices: dict[int, str] = {}
         self._last_vote_log_second: int = -1
@@ -321,12 +324,12 @@ class GameEngine:
         Chat and event messages are already in the agent's persistent history."""
         parts = []
         parts.append(f"Your current local map view is:\n{world_view}")
-        lines = ["The bots that are visible to you are:"]
+        lines = ["Other bots visible to you:"]
         if not bots:
-            lines.append("None")
+            lines.append("None nearby")
         else:
             for bot in bots:
-                lines.append(f"{bot.get('name', 'Unknown')} : {bot.get('delta_x', 0)}, {bot.get('delta_y', 0)}")
+                lines.append(f"  {bot.get('name', 'Unknown')}: dx={bot.get('delta_x', 0):+d}, dy={bot.get('delta_y', 0):+d} (dist {bot.get('distance', 0):.0f})")
         parts.append("\n".join(lines))
         return "\n\n".join(parts)
 
@@ -582,7 +585,9 @@ class GameEngine:
             if other.agent_id == player.agent_id:
                 continue
             if self.map.distance(player.tile, other.tile) <= self.cfg.chat_distance or broadcast:
-                other.agent.add_message("user", chat_line)
+                dx = player.tile[0] - other.tile[0]
+                dy = other.tile[1] - player.tile[1]  # Y-up for display
+                other.agent.add_message("user", f"{chat_line}  (dx={dx:+d}, dy={dy:+d})")
         return action
 
     # ── Kill logic ────────────────────────────────────────────────────
@@ -601,8 +606,9 @@ class GameEngine:
         victim.is_active = False
         witnesses = [p.name for p in self._get_active_players()
                      if p.agent_id not in (victim.agent_id, killer.agent_id)
-                     and self.map.distance(victim.tile, p.tile) <= self.cfg.chat_distance]
+                     and self.map.distance(victim.tile, p.tile) <= self.cfg.witness_distance]
         self._game_kills += 1
+        self._player_kills[killer.agent_id] = self._player_kills.get(killer.agent_id, 0) + 1
         self.recent_events.append(
             {"type": "kill", "victim": victim.name, "killer": killer.name,
              "witnesses": witnesses})
@@ -722,7 +728,10 @@ class GameEngine:
         self.recent_events.clear()
         self._game_kills = 0
         self._game_ejections = 0
+        self._player_kills.clear()
         self._bump_phase()
+        self._game_started_at = datetime.now(timezone.utc).isoformat()
+        self._game_started_at_ts = time.time()
         self.events.start_game()
         gid = self.events.game_id
         print(f"Game {gid} Starting!")
@@ -762,11 +771,21 @@ class GameEngine:
         print(msg)
         self._trace("game_event", {"type": "game_end", "winner": reason})
         await self._emit("system", "system_message", {"message": msg})
+        now_ts = datetime.now(timezone.utc).isoformat()
         recap = {
+            "schema_version": "1.0",
+            "session_id": self.events.session_id,
+            "game_id": self.events.game_id,
+            "started_at": getattr(self, "_game_started_at", None),
+            "ended_at": now_ts,
+            "duration_sec": time.time() - getattr(self, "_game_started_at_ts", time.time()),
             "winner": reason, "kills": self._game_kills,
             "ejections": self._game_ejections,
             "players": [{"name": p.name, "imposter": p.is_imposter,
-                         "alive": p.is_active} for p in self.players.values()],
+                         "alive": p.is_active,
+                         "kills": self._player_kills.get(p.agent_id, 0),
+                         "color": self.cfg.agent_colors[p.color_index % len(self.cfg.agent_colors)]}
+                        for p in self.players.values()],
         }
         for p in self.players.values():
             p.is_active = False

@@ -14,6 +14,7 @@
   --crewmate:      #199e70;
   --impostor:      #e66767;
   --timeout:       #8a8f98;
+  --token-limit:   #e6c367;
 
   --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
 }
@@ -32,6 +33,7 @@
   --crewmate:      #1baf7a;
   --impostor:      #e34948;
   --timeout:       #7a7d82;
+  --token-limit:   #d4a017;
 }
 
 @media (prefers-color-scheme: light) {
@@ -264,6 +266,7 @@ html, body {
   position: relative;
 }
 .chart-row .fill {
+  display: block;
   height: 100%;
   border-radius: 6px;
   min-width: 3px;
@@ -351,6 +354,7 @@ tbody tr:hover { background: var(--surface-2); }
 .feed-line .winner-crewmates { color: var(--crewmate); font-weight: 600; }
 .feed-line .winner-imposters { color: var(--impostor); font-weight: 600; }
 .feed-line .winner-timeout { color: var(--timeout); font-weight: 600; }
+.feed-line .winner-token_limit { color: var(--token-limit); font-weight: 600; }
 .feed-line .meta { color: var(--text-muted); margin-left: 8px; }
 
 /* ---- tooltip ---- */
