@@ -16,10 +16,6 @@
     </div>
 
     <div class="conn">
-      <label class="field">
-        <span>endpoint</span>
-        <input id="endpointInput" type="text" placeholder="http://localhost:8080/games.json" autocomplete="off" spellcheck="false" />
-      </label>
       <label class="field field-narrow">
         <span>every</span>
         <select id="intervalSelect">
@@ -30,7 +26,6 @@
           <option value="0">manual</option>
         </select>
       </label>
-      <button id="pingBtn" class="btn">ping now</button>
       <button id="sampleBtn" class="btn btn-ghost">load sample</button>
       <button id="clearBtn" class="btn btn-ghost">clear</button>
       <button id="themeBtn" class="btn btn-icon" title="toggle theme" aria-label="toggle theme">◐</button>
@@ -93,6 +88,12 @@
   </footer>
 </div>
 
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<!-- Config: copy firebase-config.example.js to firebase-config.js (gitignored)
+     and fill in your Firebase project's apiKey + projectId -->
+<script src="firebase-config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
