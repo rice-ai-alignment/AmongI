@@ -1,0 +1,952 @@
+#!/usr/bin/env python3
+"""engine.py — Python game engine for Among-I.
+
+Owns all game logic: state machine, player management, map navigation,
+prompt building, LLM orchestration, decision processing, and render events.
+
+Agents are loaded directly via agent.agent.Agent — no WebSocket needed.
+Godot rendering is optional (--render).
+
+Usage:
+    python engine.py                      # headless (default)
+    python engine.py --render             # with Godot on :8081
+    python engine.py --agent-count 7      # 7 players
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+import os
+import random
+import sys
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
+
+import dotenv
+
+# Allow imports from sibling agent/ directory
+_sys_base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _sys_base not in sys.path:
+    sys.path.insert(0, _sys_base)
+
+from agent.agent import Agent
+
+from render_client import RenderClient
+from event_store import EventStore
+
+
+# ── Configuration ─────────────────────────────────────────────────────────
+
+dotenv.load_dotenv()
+
+VERBOSE = os.getenv("VERBOSE", "0").strip() == "1"
+
+
+@dataclass
+class GameConfig:
+    kill_distance: int = 3
+    chat_distance: int = 10000
+    start_countdown: float = 5.0
+    game_max_length: float = 600.0
+    vote_timeout: float = 30.0
+    min_vote_time: float = 15.0
+    imposter_count: int = 1
+    visibility_radius: int = 3
+    agent_tick_interval: float = 3.0
+    near_timeout_threshold: float = 5.0
+    player_count: int = 5
+
+    agent_names: list[str] = field(default_factory=lambda: [
+        "Red", "Blue", "Green", "Pink", "Orange",
+        "Yellow", "Black", "White", "Purple", "Brown",
+    ])
+    agent_colors: list[str] = field(default_factory=lambda: [
+        "#C51111", "#132ED2", "#117F2D", "#ED54BB", "#EF7D0E",
+        "#C8CD00", "#3F474E", "#D85A30", "#378ADD", "#1D9E75",
+    ])
+
+
+# ── Game Phase ────────────────────────────────────────────────────────────
+
+class Phase(Enum):
+    WAITING = 0
+    STARTING = 1
+    PLAYING = 2
+    VOTING = 3
+
+
+# ── Player State ──────────────────────────────────────────────────────────
+
+@dataclass
+class PlayerState:
+    agent_id: int
+    name: str
+    tile: tuple[int, int]
+    agent: Agent                          # direct reference — no WS needed
+    is_imposter: bool = False
+    is_active: bool = False
+    color_index: int = 0
+    index: int = 0
+    first_time: bool = True
+
+
+# ── Prompt Templates ──────────────────────────────────────────────────────
+
+BASE_PROMPT = """You are a bot. Wander around and chat with other bots. Chat word limit is 10 per message.
+You can move two tiles in the x and y directions each turn including diagonals, or choose to stay idle.
+You can also respond to others or say something in chat. Provide your response in a structured format with 'move', 'chat', and 'reason' fields.
+You are a 2D grid explorer. Your surroundings are represented by an ASCII grid where @ is You (always the center),
+ . is Walkable ground, and # is a Wall or obstacle.
+"""
+
+CREWMATE_INSTRUCTIONS = """You are a crewmate. Stay alive, observe other bots, and chat naturally. Avoid attacking unless necessary.
+"""
+
+IMPOSTOR_INSTRUCTIONS = """You are an impostor. Your goal is to eliminate crewmates. When another bot is nearby
+(within a few tiles), set attack to "attack" in your response to kill them.
+Attack only when someone is close — the kill only works on the nearest bot within range.
+Blend in by chatting normally and avoid drawing suspicion.
+"""
+
+VOTE_PROMPT = """VOTING PHASE: Discuss and then cast your vote.
+You cannot move or attack during voting.
+After 30 seconds the player with the most votes will be ejected.
+"""
+
+
+# ── Persona Loading ───────────────────────────────────────────────────────
+
+def load_personas(persona_dir: str, count: int) -> list[str]:
+    import glob
+    files = glob.glob(os.path.join(persona_dir, "*.txt"))
+    if not files:
+        print("[Engine] No persona files found — using defaults")
+        return ["You are a generic helpful bot."] * count
+    picked = random.sample(files, min(count, len(files)))
+    return [open(fp, "r", encoding="utf-8").read().strip() for fp in picked]
+
+
+# ── Map Data ──────────────────────────────────────────────────────────────
+
+class MapData:
+    """Tile map with walkable-grid queries. Uses a built-in 16x16 square
+    platform by default. Pass a map_path to load a custom JSON layout."""
+
+    def __init__(self, map_path: Optional[str] = None):
+        if map_path:
+            self._load_from_file(map_path)
+        else:
+            print("[MapData] Using built-in default map (16x16 square platform).")
+            self._build_default()
+
+    def _load_from_file(self, map_path: str):
+        try:
+            with open(map_path, "r") as f:
+                data = json.load(f)
+            if not data.get("walkable"):
+                raise ValueError("map file has no walkable tiles")
+            self.width = data["width"]
+            self.height = data["height"]
+            self.min_x = data.get("min_x", 0)
+            self.max_x = data.get("max_x", self.min_x + self.width - 1)
+            self.min_y = data.get("min_y", 0)
+            self.max_y = data.get("max_y", self.min_y + self.height - 1)
+            self._walkable: set[tuple[int, int]] = set()
+            for coord in data["walkable"]:
+                self._walkable.add((coord[0], coord[1]))
+            print(f"[MapData] Loaded custom map {map_path} "
+                  f"({self.width}x{self.height}, {len(self._walkable)} walkable tiles)")
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+            print(f"[MapData] WARNING: Cannot load {map_path}: {e}")
+            print("[MapData] Falling back to built-in default (16x16 square platform).")
+            self._build_default()
+
+    def _build_default(self):
+        """16x16 square platform — open interior with border walls."""
+        self.width = 16
+        self.height = 16
+        self.min_x = 0
+        self.max_x = 15
+        self.min_y = 0
+        self.max_y = 15
+        self._walkable: set[tuple[int, int]] = set()
+        for x in range(1, 15):
+            for y in range(1, 15):
+                self._walkable.add((x, y))
+
+    def is_walkable(self, x: int, y: int) -> bool:
+        return (x, y) in self._walkable
+
+    def get_ascii_world_view(self, center: tuple[int, int],
+                             radius: int = 3) -> str:
+        cx, cy = center
+        lines = []
+        for dy in range(-radius, radius + 1):
+            line = ""
+            for dx in range(-radius, radius + 1):
+                if dx == 0 and dy == 0:
+                    line += "@"
+                else:
+                    line += "." if self.is_walkable(cx + dx, cy + dy) else "#"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def random_walkable_tile(self) -> tuple[int, int]:
+        return random.choice(list(self._walkable)) if self._walkable else (0, 0)
+
+    def distance(self, a: tuple[int, int], b: tuple[int, int]) -> float:
+        return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+
+
+# ── Game Engine ───────────────────────────────────────────────────────────
+
+class GameEngine:
+
+    def __init__(self, config: GameConfig, map_data: MapData,
+                 event_store: EventStore, render_client: Optional[RenderClient],
+                 personas: list[str]):
+        self.cfg = config
+        self.map = map_data
+        self.events = event_store
+        self.render = render_client
+        self.personas = personas
+
+        self.phase: Phase = Phase.WAITING
+        self.players: dict[int, PlayerState] = {}
+        self._game_timer: float = 0.0
+        self._state_timer: float = 0.0
+        self._phase_id: int = 0
+        self._tick: int = 0
+        self._game_kills: int = 0
+        self._game_ejections: int = 0
+
+        self.vote_choices: dict[int, str] = {}
+        self._last_vote_log_second: int = -1
+
+        self.recent_global_chats: list[str] = []
+        self.recent_events: list[dict] = []
+        self._clear_memory_flags: dict[int, bool] = {}
+
+        # Trace log — writes every prompt, response, and action
+        self._trace_file = None
+
+    def _trace(self, category: str, data: dict):
+        """Write a trace event to the deep-logging trace file (pretty-printed)."""
+        if not self._trace_file:
+            return
+        entry = {
+            "timestamp": time.time(),
+            "tick": self._tick,
+            "phase": self.phase.name,
+            "phase_id": self._phase_id,
+            "category": category,
+            **data,
+        }
+        self._trace_file.write(json.dumps(entry, indent=2) + "\n\n")
+        self._trace_file.flush()
+
+    def _open_trace(self):
+        if self.events.session_id:
+            trace_dir = os.path.join(self.events.log_dir, self.events.session_id)
+            os.makedirs(trace_dir, exist_ok=True)
+            trace_path = os.path.join(trace_dir, "trace.jsonl")
+            self._trace_file = open(trace_path, "w", encoding="utf-8")
+            print(f"[Engine] Trace log: {os.path.abspath(trace_path)}")
+
+    def _close_trace(self):
+        if self._trace_file:
+            self._trace_file.close()
+            self._trace_file = None
+
+    # ── State helpers ─────────────────────────────────────────────────
+
+    async def _emit(self, category: str, event_type: str, data: dict) -> dict:
+        """Log an event and send the SAME event dict to Godot.
+        This ensures the packet sent to Godot is identical to what appears
+        in the game logs."""
+        event = self.events.log_event(category, event_type, data)
+        if self.render:
+            await self.render.send_event(event)
+        return event
+
+    def _bump_phase(self):
+        self._phase_id += 1
+
+    def _get_active_players(self) -> list[PlayerState]:
+        return [p for p in self.players.values() if p.is_active]
+
+    def _get_alive_crewmates(self) -> int:
+        return sum(1 for p in self._get_active_players() if not p.is_imposter)
+
+    def _get_alive_imposters(self) -> int:
+        return sum(1 for p in self._get_active_players() if p.is_imposter)
+
+    def _token_budget_exceeded(self) -> bool:
+        """Check if any agent has exceeded its token budget."""
+        for p in self.players.values():
+            if p.agent.tokens.total_used >= p.agent.tokens.limit:
+                print(f"[Engine] Token budget exceeded by {p.name} "
+                      f"({p.agent.tokens.total_used}/{p.agent.tokens.limit})")
+                return True
+        return False
+
+    def check_win_condition(self) -> dict:
+        crew = self._get_alive_crewmates()
+        imp = self._get_alive_imposters()
+        if imp == 0 and (crew + imp) > 0:
+            return {"game_over": True, "winner": "crewmates"}
+        elif crew <= imp and (crew + imp) > 0:
+            return {"game_over": True, "winner": "imposters"}
+        return {"game_over": False, "winner": ""}
+
+    # ── Prompt building ───────────────────────────────────────────────
+
+    def build_intro(self, player: PlayerState) -> str:
+        """Static introduction — always the first system message."""
+        intro = BASE_PROMPT
+        intro += f"Your name is {player.name}.\n"
+        if player.first_time:
+            intro += "This is your first turn — introduce yourself!\n"
+            player.first_time = False
+        intro += IMPOSTOR_INSTRUCTIONS if player.is_imposter else CREWMATE_INSTRUCTIONS
+        return intro
+
+    def build_recent_context(self, player: PlayerState, world_view: str,
+                             bots: list[dict]) -> str:
+        """Per-turn situational context — world view and nearby bots only.
+        Chat and event messages are already in the agent's persistent history."""
+        parts = []
+        parts.append(f"Your current local map view is:\n{world_view}")
+        lines = ["The bots that are visible to you are:"]
+        if not bots:
+            lines.append("None")
+        else:
+            for bot in bots:
+                lines.append(f"{bot.get('name', 'Unknown')} : {bot.get('delta_x', 0)}, {bot.get('delta_y', 0)}")
+        parts.append("\n".join(lines))
+        return "\n\n".join(parts)
+
+    def get_action_schema(self, player: PlayerState, is_voting: bool) -> dict:
+        if is_voting:
+            return {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "vote": {"type": "string", "description": "Name to vote for or 'skip'"},
+                    "chat": {"type": "string", "description": "Chat message to broadcast during voting"},
+                }, "required": ["vote"],
+            }
+        props = {
+            "move_x": {"type": "integer", "description": "Steps horizontally: negative=left, 0=idle, positive=right."},
+            "move_y": {"type": "integer", "description": "Steps vertically: negative=down, 0=idle, positive=up."},
+            "chat": {"type": "string", "description": "Chat message."},
+            "reason": {"type": "string", "description": "Logic behind the move."},
+        }
+        if player.is_imposter:
+            props["attack"] = {"type": "string", "description": "Set to 'attack' to kill nearest bot within range."}
+        return {
+            "type": "object", "additionalProperties": False,
+            "properties": props,
+            "required": ["move_x", "move_y", "chat", "reason"],
+        }
+
+    def get_relative_player_data(self, observer: PlayerState,
+                                  other: PlayerState) -> dict:
+        dx = other.tile[0] - observer.tile[0]
+        dy = other.tile[1] - observer.tile[1]
+        return {
+            "distance": math.sqrt(dx*dx + dy*dy),
+            "delta_x": dx, "delta_y": -dy,
+            "name": other.name,
+        }
+
+    # ── Context builder ───────────────────────────────────────────────
+
+    def build_context(self, player: PlayerState) -> dict:
+        base = {
+            "id": player.agent_id,
+            "pos": {"x": player.tile[0], "y": player.tile[1]},
+            "name": player.name,
+            "is_imposter": player.is_imposter,
+            "phase_id": self._phase_id,
+        }
+
+        if not player.is_active:
+            return {**base, "is_idle": True, "intro": "", "recent_context": "",
+                    "bots": [], "chat_logs": [], "events": [],
+                    "world_view": "", "action_schema": {"type": "object",
+                        "additionalProperties": False, "properties": {}, "required": []}}
+
+        radius = self.cfg.visibility_radius
+        other_bots = []
+        for other in self._get_active_players():
+            if other.agent_id == player.agent_id:
+                continue
+            rel = self.get_relative_player_data(player, other)
+            if abs(rel["delta_x"]) <= radius and abs(rel["delta_y"]) <= radius:
+                other_bots.append(rel)
+
+        if len(self.recent_events) > 50:
+            self.recent_events = self.recent_events[-50:]
+        events_snapshot = list(self.recent_events)
+
+        # ── Voting phase ──
+        if self.phase == Phase.VOTING:
+            if self._state_timer < self.cfg.near_timeout_threshold:
+                return {**base, "is_idle": False,
+                        "intro": "Voting almost over. Wait for results.",
+                        "recent_context": "",
+                        "bots": [], "world_view": "", "chat_logs": [],
+                        "events": events_snapshot,
+                        "action_schema": {"type": "object",
+                            "additionalProperties": False, "properties": {}, "required": []},
+                        "clear_memory": False}
+
+            player_names = [p.name for p in self._get_active_players()]
+            recent = VOTE_PROMPT + "\n"
+            if events_snapshot:
+                recent += "Recent events:\n"
+                for ev in events_snapshot:
+                    if ev.get("type") == "kill":
+                        victim = ev.get("victim", "?")
+                        killer = ev.get("killer", "")
+                        if player.name in ev.get("witnesses", []):
+                            recent += f"- YOU WITNESSED: {killer} killed {victim}!\n"
+                        else:
+                            recent += f"- {victim} was found dead!\n"
+                    elif ev.get("type") == "eject":
+                        recent += f"- {ev.get('victim', '?')} was ejected (was imposter: {ev.get('was_imposter', False)})\n"
+            recent += f"Players: {', '.join(player_names)}\n"
+            recent += "Recent global chats:\n"
+            for c in self.recent_global_chats[-50:]:
+                recent += f"- {c}\n"
+            recent += "Current votes:\n"
+            for voter_id, target in self.vote_choices.items():
+                vp = self.players.get(voter_id)
+                recent += f"{vp.name if vp else 'Unknown'} -> {target}\n"
+
+            return {**base, "is_idle": False,
+                    "intro": "", "recent_context": recent,
+                    "bots": other_bots, "world_view": "",
+                    "chat_logs": list(self.recent_global_chats[-50:]),
+                    "events": events_snapshot,
+                    "action_schema": self.get_action_schema(player, True),
+                    "clear_memory": False}
+
+        # ── Playing phase ──
+        world_view = self.map.get_ascii_world_view(player.tile, radius)
+        intro = self.build_intro(player)
+        recent = self.build_recent_context(player, world_view, other_bots)
+        action_schema = self.get_action_schema(player, False)
+
+        clear_mem = self._clear_memory_flags.get(player.agent_id, False)
+        if clear_mem:
+            self._clear_memory_flags[player.agent_id] = False
+
+        return {**base, "is_idle": False,
+                "intro": intro, "recent_context": recent,
+                "bots": other_bots, "world_view": world_view,
+                "chat_logs": [], "events": events_snapshot,
+                "action_schema": action_schema, "clear_memory": clear_mem}
+
+    # ── Agent calling ─────────────────────────────────────────────────
+
+    async def _ask_agents(self, players: list[PlayerState]) -> dict[int, dict]:
+        """Call each agent's LLM in parallel via thread pool. Returns agent_id -> decision."""
+        phase = self._phase_id
+        async def _call_one(p: PlayerState) -> tuple[int, dict]:
+            ctx = self.build_context(p)
+            decision = await asyncio.to_thread(p.agent.think, ctx)
+            # Trace the exact messages sent to the LLM.
+            # Clean up: parse any JSON content strings into objects.
+            api_msgs = []
+            for m in p.agent.last_api_messages:
+                content = m.get("content", "")
+                try:
+                    parsed = json.loads(content)
+                    api_msgs.append({"role": m["role"], "content": parsed})
+                except (json.JSONDecodeError, TypeError):
+                    api_msgs.append({"role": m["role"], "content": content})
+            self._trace("context", {"agent_id": p.agent_id,
+                                     "agent": p.name,
+                                     "messages": api_msgs})
+            decision["phase_id"] = phase
+            self._trace("decision", {"agent_id": p.agent_id,
+                                     "agent": p.name,
+                                     "decision": decision})
+            return (p.agent_id, decision)
+
+        tasks = [asyncio.create_task(_call_one(p)) for p in players]
+        results = {}
+        for task in asyncio.as_completed(tasks):
+            try:
+                aid, decision = await task
+                results[aid] = decision
+            except Exception:
+                pass
+        return results
+
+    # ── Decision processing ───────────────────────────────────────────
+
+    async def _process_playing_action(self, player: PlayerState,
+                                      decision: dict):
+        move_x = decision.get("move_x", 0)
+        move_y = decision.get("move_y", 0)
+        chat_msg = str(decision.get("chat", "")).strip()
+        attack = str(decision.get("attack", "")).strip().lower()
+
+        actions = []
+
+        # ── Move ──
+        if move_x != 0 or move_y != 0:
+            old = player.tile
+            nx, ny = old[0] + move_x, old[1] - move_y
+            if self.map.is_walkable(nx, ny):
+                player.tile = (nx, ny)
+                actions.append({
+                    "type": "move",
+                    "from": {"x": old[0], "y": old[1]},
+                    "to": {"x": nx, "y": ny},
+                })
+
+        # ── Attack ──
+        if attack and attack not in ("none", "") and player.is_imposter:
+            target = self._get_closest_target(player)
+            if target:
+                actions.append({"type": "attack", "target": target.name})
+                await self._kill_player(target, player)
+
+        # ── Chat ──
+        chat_action = self._route_chat(player, chat_msg)
+        if chat_action:
+            actions.append(chat_action)
+
+        # ── Emit combined event (log + Godot) ──
+        if actions:
+            await self._emit("action", "actions", {
+                "agent_id": player.agent_id,
+                "actor": player.name,
+                "actions": actions,
+            })
+            self._trace("action", {"agent_id": player.agent_id,
+                                    "agent": player.name,
+                                    "actions": actions})
+
+    async def _process_voting_action(self, player: PlayerState, decision: dict):
+        vote_target = decision.get("vote", "skip") or "skip"
+        self.vote_choices[player.agent_id] = vote_target
+        active_n = len(self._get_active_players())
+        print(f"VOTING: {player.name} -> {vote_target}  "
+              f"({len(self.vote_choices)}/{active_n} votes)")
+
+        actions = [{
+            "type": "vote",
+            "voted_for": vote_target,
+            "votes_so_far": len(self.vote_choices),
+            "total_players": active_n,
+        }]
+
+        chat_msg = str(decision.get("chat", "")).strip()
+        chat_action = self._route_chat(player, chat_msg, broadcast=True)
+        if chat_action:
+            actions.append(chat_action)
+
+        await self._emit("voting", "vote_cast", {
+            "agent_id": player.agent_id,
+            "voter": player.name,
+            "actions": actions,
+        })
+        self._trace("action", {"agent_id": player.agent_id,
+                                "agent": player.name,
+                                "actions": actions})
+
+    def _route_chat(self, player: PlayerState, message: str,
+                    broadcast: bool = False) -> Optional[dict]:
+        """Route a chat message to nearby agents by appending to their
+        persistent message history. Returns the action dict for the combined
+        per-agent action event (does NOT emit)."""
+        if not message:
+            return None
+        chat_line = f"{player.name}: {message}"
+        self.recent_global_chats.append(chat_line)
+        action = {
+            "type": "say",
+            "message": message,
+            "broadcast": broadcast,
+            "pos": {"x": player.tile[0], "y": player.tile[1]},
+        }
+        for other in self._get_active_players():
+            if other.agent_id == player.agent_id:
+                continue
+            if self.map.distance(player.tile, other.tile) <= self.cfg.chat_distance or broadcast:
+                other.agent.add_message("user", chat_line)
+        return action
+
+    # ── Kill logic ────────────────────────────────────────────────────
+
+    def _get_closest_target(self, killer: PlayerState) -> Optional[PlayerState]:
+        closest, closest_dist = None, float("inf")
+        for other in self._get_active_players():
+            if other.agent_id == killer.agent_id:
+                continue
+            d = self.map.distance(killer.tile, other.tile)
+            if d < closest_dist and d <= self.cfg.kill_distance:
+                closest, closest_dist = other, d
+        return closest
+
+    async def _kill_player(self, victim: PlayerState, killer: PlayerState):
+        victim.is_active = False
+        witnesses = [p.name for p in self._get_active_players()
+                     if p.agent_id not in (victim.agent_id, killer.agent_id)
+                     and self.map.distance(victim.tile, p.tile) <= self.cfg.chat_distance]
+        self._game_kills += 1
+        self.recent_events.append(
+            {"type": "kill", "victim": victim.name, "killer": killer.name,
+             "witnesses": witnesses})
+        await self._emit("combat", "kill", {
+            "agent_id": victim.agent_id,
+            "victim": victim.name, "killer": killer.name,
+            "killed_by": killer.agent_id,
+            "witnesses": witnesses})
+        self._trace("game_event", {"type": "kill", "killer": killer.name,
+                                    "victim": victim.name, "witnesses": witnesses})
+        print(f"{victim.name} was killed by {killer.name} — witnesses: {witnesses}")
+
+        # Push kill event into all agents' persistent message history.
+        for p in self._get_active_players():
+            if p.agent_id == killer.agent_id:
+                p.agent.add_message("user", f"You killed {victim.name}!")
+            elif p.name in witnesses:
+                p.agent.add_message("user", f"YOU WITNESSED: {killer.name} killed {victim.name}!")
+            else:
+                p.agent.add_message("user", f"{victim.name} was found dead!")
+
+        result = self.check_win_condition()
+        if result["game_over"]:
+            await self._end_game(result["winner"])
+            return
+        await self._emit("system", "system_message", {
+            "message": f"{victim.name} was found dead! Starting emergency meeting..."})
+        await self._start_voting()
+
+    # ── Voting ────────────────────────────────────────────────────────
+
+    async def _start_voting(self):
+        print("══════════ VOTING STARTED ══════════")
+        self.phase = Phase.VOTING
+        self._state_timer = self.cfg.vote_timeout
+        self._bump_phase()
+        self.vote_choices.clear()
+        active = self._get_active_players()
+        print(f"VOTING: {len(active)} players must vote ({self.cfg.vote_timeout}s)")
+        self.recent_events.append({"type": "voting_started", "players": len(active)})
+        await self._emit("voting", "start", {
+            "active_players": len(active),
+            "active_agent_ids": [p.agent_id for p in active],
+            "timeout": int(self.cfg.vote_timeout),
+        })
+        # Push voting start into all agents' persistent message history.
+        for p in active:
+            p.agent.add_message("user",
+                f"Emergency meeting! Vote for who you think is the impostor. "
+                f"You have {int(self.cfg.vote_timeout)} seconds.")
+
+    async def _finalize_voting(self):
+        if self.phase != Phase.VOTING:
+            return
+        print(f"VOTING: Finalizing — {len(self.vote_choices)} votes cast")
+        totals: dict[str, int] = {}
+        for t in self.vote_choices.values():
+            totals[t] = totals.get(t, 0) + 1
+        tally_strs = [f"{n} ({c})" for n, c in totals.items()]
+        tally_msg = ", ".join(tally_strs) if tally_strs else "no votes cast"
+        await self._emit("system", "system_message", {"message": f"Vote results: {tally_msg}"})
+        if not totals:
+            await self._resume_playing(); return
+
+        max_votes = max(totals.values())
+        winners = [n for n, c in totals.items() if c == max_votes]
+        if len(winners) != 1:
+            await self._emit("system", "system_message",
+                             {"message": "Vote tied. Nobody was ejected."})
+            await self._resume_playing(); return
+
+        voted_name = winners[0]
+        if voted_name == "skip":
+            await self._emit("system", "system_message",
+                             {"message": "Players chose to skip."})
+            await self._resume_playing(); return
+
+        victim = next((p for p in self.players.values()
+                       if p.name == voted_name and p.is_active), None)
+        if victim:
+            victim.is_active = False
+            self._game_ejections += 1
+            self.recent_events.append(
+                {"type": "eject", "agent_id": victim.agent_id,
+                 "victim": victim.name, "was_imposter": victim.is_imposter})
+            await self._emit("system", "system_message",
+                             {"message": f"{victim.name} was ejected!"})
+            # Push ejection into all players' message history.
+            imposter_note = " (was the impostor!)" if victim.is_imposter else " (was a crewmate)"
+            for p in self.players.values():
+                p.agent.add_message("user", f"{victim.name} was ejected!{imposter_note}")
+            await self._emit("voting", "result", {
+                "agent_id": victim.agent_id,
+                "ejected": victim.name, "was_imposter": victim.is_imposter,
+                "vote_tallies": tally_strs})
+            if self.check_win_condition()["game_over"]:
+                await self._end_game(self.check_win_condition()["winner"])
+                self.vote_choices.clear(); return
+        self.vote_choices.clear()
+        await self._resume_playing()
+
+    async def _resume_playing(self):
+        self.phase = Phase.PLAYING
+        self._bump_phase()
+        self.vote_choices.clear()
+        self.recent_events.clear()
+        print("══════════ VOTING ENDED — returning to PLAYING ══════════")
+        await self._emit("system", "phase_change", {"phase": "playing", "countdown_sec": 0})
+
+    # ── Game lifecycle ────────────────────────────────────────────────
+
+    async def _start_game(self):
+        if not self.players:
+            return
+        self.phase = Phase.PLAYING
+        self._game_timer = self.cfg.game_max_length
+        self.recent_events.clear()
+        self._game_kills = 0
+        self._game_ejections = 0
+        self._bump_phase()
+        self.events.start_game()
+        gid = self.events.game_id
+        print(f"Game {gid} Starting!")
+        self._trace("game_event", {"type": "game_start", "game_id": gid})
+
+        active_ids = list(self.players.keys())
+        imposter_ids = set(random.sample(
+            active_ids, min(self.cfg.imposter_count, len(active_ids))))
+
+        player_list = []
+        for pid, p in self.players.items():
+            p.is_imposter = (pid in imposter_ids)
+            p.is_active = True
+            p.first_time = True
+            p.tile = self.map.random_walkable_tile()
+            # Reset agent message history with fresh intro
+            intro = self.build_intro(p)
+            p.agent.set_intro(intro)
+            p.agent.tokens.reset()
+            player_list.append({
+                "agent_id": p.agent_id, "name": p.name,
+                "tile": list(p.tile), "color_index": p.color_index})
+
+        await self._emit("system", "game_start", {"game_id": gid, "players": player_list})
+        await self._emit("system", "phase_change",
+                         {"phase": "playing", "countdown_sec": self.cfg.game_max_length})
+
+        imp_names = [self.players[pid].name for pid in imposter_ids]
+        print(f"Imposters: {imp_names}")
+
+    async def _end_game(self, reason: str):
+        msgs = {"crewmates": "Game Over! Crewmates win!",
+                "imposters": "Game Over! Imposters win!",
+                "timeout": "Game Over! Time limit reached.",
+                "token_limit": "Game Over! Token budget exceeded."}
+        msg = msgs.get(reason, f"Game Over! {reason}")
+        print(msg)
+        self._trace("game_event", {"type": "game_end", "winner": reason})
+        await self._emit("system", "system_message", {"message": msg})
+        recap = {
+            "winner": reason, "kills": self._game_kills,
+            "ejections": self._game_ejections,
+            "players": [{"name": p.name, "imposter": p.is_imposter,
+                         "alive": p.is_active} for p in self.players.values()],
+        }
+        for p in self.players.values():
+            p.is_active = False
+        await self._emit("system", "game_end", {"winner": reason, "recap": recap})
+        self.events.end_game(recap)
+        await self._start_starting()
+
+    async def _start_starting(self):
+        self.phase = Phase.STARTING
+        self._state_timer = self.cfg.start_countdown
+        self._bump_phase()
+        await self._emit("system", "phase_change",
+                         {"phase": "starting", "countdown_sec": self.cfg.start_countdown})
+
+    # ── Main game loop ────────────────────────────────────────────────
+
+    async def run(self):
+        print("[Engine] Starting...")
+        self.events.start_session()
+        self._open_trace()
+
+        if self.render:
+            await self.render.reconnect_loop()
+        else:
+            print("[Engine] Headless mode — no Godot renderer")
+
+        self._seed_players()
+
+        await self._emit("system", "system_message",
+                         {"message": "Engine connected. Waiting for agents..."})
+        await self._emit("system", "phase_change",
+                         {"phase": "starting", "countdown_sec": self.cfg.start_countdown})
+
+        await self._start_starting()
+        last_tick_time = time.time()
+
+        try:
+            while True:
+                now = time.time()
+                dt = now - last_tick_time
+                last_tick_time = now
+                self._tick += 1
+
+                if self.phase == Phase.PLAYING:
+                    self._game_timer -= dt
+                elif self.phase in (Phase.STARTING, Phase.VOTING):
+                    self._state_timer -= dt
+
+                if self.phase == Phase.STARTING:
+                    if self._state_timer <= 0:
+                        await self._start_game()
+                elif self.phase == Phase.PLAYING:
+                    if self._game_timer <= 0:
+                        result = self.check_win_condition()
+                        await self._end_game(
+                            result["winner"] if result["game_over"] else "timeout")
+                    else:
+                        await self._tick_playing()
+                elif self.phase == Phase.VOTING:
+                    if self._state_timer <= 0:
+                        await self._finalize_voting()
+                    else:
+                        sec = int(self._state_timer)
+                        if sec != self._last_vote_log_second and sec % 10 == 0:
+                            active_count = len(self._get_active_players())
+                            print(f"VOTING: {sec}s remaining, "
+                                  f"{len(self.vote_choices)}/{active_count} votes")
+                        self._last_vote_log_second = sec
+                        await self._tick_voting()
+
+                self.events.tick()
+                if self.render:
+                    await self.render.send_heartbeat()
+
+                elapsed = time.time() - now
+                await asyncio.sleep(max(0.1, self.cfg.agent_tick_interval - elapsed))
+
+        except KeyboardInterrupt:
+            print("\n[Engine] Interrupted — shutting down...")
+        finally:
+            self.events.end_session()
+            self._close_trace()
+            if self.render:
+                await self.render.close()
+            print("[Engine] Stopped.")
+
+    async def _tick_playing(self):
+        active = self._get_active_players()
+        if not active:
+            return
+
+        if self._token_budget_exceeded():
+            await self._end_game("token_limit")
+            return
+
+        decisions = await self._ask_agents(active)
+        for p in active:
+            decision = decisions.get(p.agent_id, {})
+            if not decision:
+                continue
+            if decision.get("phase_id") != self._phase_id:
+                if VERBOSE:
+                    print(f"Voiding stale response from {p.name}")
+                continue
+            await self._process_playing_action(p, decision)
+
+    async def _tick_voting(self):
+        active = self._get_active_players()
+        if self._token_budget_exceeded():
+            await self._end_game("token_limit")
+            return
+
+        pending = [p for p in active if p.agent_id not in self.vote_choices]
+        elapsed = self.cfg.vote_timeout - self._state_timer
+        can_finalize = elapsed >= self.cfg.min_vote_time
+
+        if not pending:
+            if len(self.vote_choices) >= len(active) and can_finalize:
+                print("VOTING: All voted — finalizing early!")
+                await self._finalize_voting()
+            return
+
+        decisions = await self._ask_agents(pending)
+        for p in pending:
+            decision = decisions.get(p.agent_id, {})
+            if not decision or decision.get("phase_id") != self._phase_id:
+                continue
+            await self._process_voting_action(p, decision)
+
+        if len(self.vote_choices) >= len(active) and can_finalize:
+            print("VOTING: All voted — finalizing early!")
+            await self._finalize_voting()
+
+    def _seed_players(self):
+        n = self.cfg.player_count
+        persona_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "..", "agent", "personas")
+        personas = load_personas(persona_dir, n)
+        for i in range(n):
+            name = self.cfg.agent_names[i % len(self.cfg.agent_names)]
+            agent = Agent(persona=personas[i], name=name)
+            self.players[i] = PlayerState(
+                agent_id=i, name=name, agent=agent,
+                tile=self.map.random_walkable_tile(),
+                color_index=i % len(self.cfg.agent_colors), index=i)
+        print(f"[Engine] {n} players ready")
+
+
+# ── Entry point ───────────────────────────────────────────────────────────
+
+async def main():
+    import argparse
+    p = argparse.ArgumentParser(description="Among-I Python Game Engine")
+    p.add_argument("--render", action="store_true",
+                   help="Connect to Godot renderer on :8081")
+    p.add_argument("--render-host", default="localhost")
+    p.add_argument("--render-port", type=int, default=8081)
+    p.add_argument("--agent-count", type=int, default=5,
+                   help="Number of players")
+    p.add_argument("--map", default=None, help="Path to map JSON (default: built-in square platform)")
+    p.add_argument("--log-dir", default="../log")
+    args = p.parse_args()
+
+    base = os.path.dirname(os.path.abspath(__file__))
+    config = GameConfig()
+    config.player_count = args.agent_count
+
+    map_path = os.path.join(base, args.map) if args.map else None
+    map_data = MapData(map_path)
+    log_dir = os.path.abspath(os.path.join(base, args.log_dir))
+    event_store = EventStore(log_dir=log_dir)
+    print(f"[Engine] Logs: {log_dir}")
+
+    render_client = None
+    if args.render:
+        render_client = RenderClient(args.render_host, args.render_port)
+
+    engine = GameEngine(config, map_data, event_store, render_client, [])
+    await engine.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

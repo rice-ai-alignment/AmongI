@@ -1,6 +1,7 @@
 .env
 CLAUDE.md
 chat_logs/
+log/
 logs/
 .vscode/
 __pycache__/

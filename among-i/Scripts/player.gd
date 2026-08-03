@@ -30,13 +30,9 @@ func set_tile_position(target_tile_coords: Vector2i):
 func move_to_tile(target_tile_coords: Vector2i):
 	if is_moving:
 		return false
-		
+
 	tile = target_tile_coords
-		
 	var sprite = get_node("Sprite2D")
-		
-	if not _is_tile_walkable(target_tile_coords):
-		return false
 
 	var target_world_position = get_tile_position(target_tile_coords)
 	
