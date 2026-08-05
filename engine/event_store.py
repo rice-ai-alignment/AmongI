@@ -108,16 +108,10 @@ class EventStore:
         return self._game_id
 
     def end_game(self, recap: dict):
-        """Close the per-game log with a final recap event."""
+        """Close the per-game log file. The game_end event is logged via
+        engine._emit() to avoid duplicates."""
         if not self._game_file:
             return
-
-        self.log_event("system", "game_end", {
-            "game_id": self._game_id,
-            "recap": recap,
-        })
-        self._flush()  # Force flush for game end
-
         self._game_file.close()
         self._game_file = None
         print(f"[EventStore] Game ended: {self._game_id} "

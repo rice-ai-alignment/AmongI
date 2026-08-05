@@ -27,8 +27,9 @@ try:
 except ImportError:
     HAS_FIRESTORE = False
 
-FIRESTORE_COLLECTION = os.getenv("FIRESTORE_COLLECTION", "experiments")
-FIRESTORE_EXPERIMENT = os.getenv("FIRESTORE_EXPERIMENT", "")
+FIRESTORE_COLLECTION = os.getenv("FIRESTORE_COLLECTION", "studies")
+STUDY_ID = os.getenv("STUDY_ID", "")
+EXPERIMENT_CODE = os.getenv("EXPERIMENT_CODE", "")
 FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED_PATH", "firebase-key.json")
 _firestore_ready = False
 
@@ -106,10 +107,11 @@ class LogStore:
 
     def _read_to_end(self, path: str):
         """Read all new lines from path starting at _file_pos."""
+        push = _firestore_ready  # read at call time, not definition time
         with open(path, "r", encoding="utf-8") as f:
             f.seek(self._file_pos)
             for line in f:
-                self._process_line(line, push=_firestore_ready)
+                self._process_line(line, push=push)
         self._file_pos = os.path.getsize(path)
 
     def _process_line(self, line: str, push: bool = False):
@@ -144,11 +146,17 @@ class LogStore:
 
     # ── Firestore writes ──────────────────────────────────────────────
 
-    def _experiment_id(self) -> str:
-        global FIRESTORE_EXPERIMENT
-        if not FIRESTORE_EXPERIMENT and self.session_id:
-            FIRESTORE_EXPERIMENT = self.session_id.replace("SESSION-", "exp-")
-        return FIRESTORE_EXPERIMENT or "exp-temp"
+    def _experiment_doc_ref(self):
+        """Return Firestore DocumentReference for the active experiment."""
+        db = firestore.client()
+        study = os.getenv("STUDY_ID", "") or STUDY_ID
+        exp = os.getenv("EXPERIMENT_CODE", "") or EXPERIMENT_CODE
+        if study and exp:
+            return db.collection(FIRESTORE_COLLECTION).document(study) \
+                     .collection("experiments").document(exp)
+        # Fallback: session-based temp name
+        sid = self.session_id or "unknown"
+        return db.collection(FIRESTORE_COLLECTION).document(sid.replace("SESSION-", "exp-"))
 
     def _push_game(self, recap: dict):
         if not _firestore_ready:
@@ -157,19 +165,13 @@ class LogStore:
             game_id = recap.get("game_id", "unknown")
             if game_id in self._pushed_game_ids:
                 return
-            db = firestore.client()
-            exp_id = self._experiment_id()
+            doc_ref = self._experiment_doc_ref()
+            doc_ref.collection("games").document(game_id).set(recap)
 
-            # Push the game document
-            db.collection(FIRESTORE_COLLECTION).document(exp_id) \
-              .collection("games").document(game_id).set(recap)
-
-            # Compute and push aggregated stats
             stats = self._compute_stats()
-            db.collection(FIRESTORE_COLLECTION).document(exp_id).set(stats, merge=True)
-
+            doc_ref.set(stats, merge=True)
             self._pushed_game_ids.add(game_id)
-            print(f"[Bridge] Pushed {game_id} to experiments/{exp_id} "
+            print(f"[Bridge] Pushed {game_id} to {doc_ref.path} "
                   f"({stats['total_games']} games, {stats['total_kills']} kills)")
         except Exception as e:
             print(f"[Bridge] Firestore push failed: {e}")
@@ -227,15 +229,26 @@ async def main():
     parser.add_argument("--log-dir", default="../log")
     parser.add_argument("--interval", type=float, default=5.0,
                         help="Seconds between log-tail checks")
+    parser.add_argument("--study", default=os.getenv("STUDY_ID", ""),
+                        help="Firestore study name")
+    parser.add_argument("--experiment", default=os.getenv("EXPERIMENT_CODE", ""),
+                        help="Firestore experiment name")
     args = parser.parse_args()
+    if args.study:
+        os.environ["STUDY_ID"] = args.study
+    if args.experiment:
+        os.environ["EXPERIMENT_CODE"] = args.experiment
 
     log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), args.log_dir))
     print(f"[Bridge] Watching: {log_dir}")
+    study = args.study or os.getenv("STUDY_ID", "")
+    exp = args.experiment or os.getenv("EXPERIMENT_CODE", "")
+    if study and exp:
+        print(f"[Bridge] Target: studies/{study}/experiments/{exp}")
 
     store = LogStore(log_dir)
     store.load_logs()
 
-    # Init Firestore for live push
     if HAS_FIRESTORE:
         init_firestore()
 

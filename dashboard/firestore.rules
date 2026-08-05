@@ -1,0 +1,40 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Studies ──────────────────────────────────────────────────
+    match /studies/{studyId} {
+      // Anyone can read studies (public dashboard)
+      allow read: if true;
+
+      // Only authenticated users can create studies
+      allow create: if request.auth != null
+                    && request.resource.data.owner == request.auth.uid;
+
+      // Only the study owner can update or delete
+      allow update, delete: if resource.data.owner == request.auth.uid;
+
+      // ── Experiments ────────────────────────────────────────────
+      match /experiments/{experimentCode} {
+        // Anyone can read experiments and their games
+        allow read: if true;
+
+        // Only the parent study's owner can create/modify experiments
+        allow create: if request.auth != null
+                      && get(/databases/$(database)/documents/studies/$(studyId)).data.owner == request.auth.uid;
+
+        allow update, delete: if get(/databases/$(database)/documents/studies/$(studyId)).data.owner == request.auth.uid;
+
+        // ── Games ────────────────────────────────────────────────
+        match /games/{gameId} {
+          // Anyone can read game recaps
+          allow read: if true;
+
+          // Study owner or server (admin SDK) can write
+          allow write: if get(/databases/$(database)/documents/studies/$(studyId)).data.owner == request.auth.uid;
+        }
+      }
+    }
+  }
+}
