@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAIA Labs // among-i</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎮</text></svg>" />
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <!-- Local dev config (gitignored) -->
+  <script src="/firebase-config.js"></script>
+  <script>
+    // Init Firebase immediately — must happen before any Vue code runs
+    if (typeof FIREBASE_CONFIG !== "undefined") {
+      firebase.initializeApp(FIREBASE_CONFIG);
+      console.log("[dashboard] Firebase initialized");
+    }
+  </script>
+  <script type="module" crossorigin src="/assets/index-BBOiigFY.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-D0WPe7KM.css">
+</head>
+<body>
+  <div id="app"></div>
+</body>
+</html>

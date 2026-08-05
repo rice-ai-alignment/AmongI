@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run.py — One-command launcher for the Among-I engine + Firestore bridge.
+"""run.py - One-command launcher for the Among-I engine + Firestore bridge.
 
 Usage:
     python run.py                          # headless engine + bridge
@@ -38,7 +38,15 @@ async def main():
     parser.add_argument("--log-dir", default="../log")
     parser.add_argument("--firebase", action="store_true",
                         help="Push game data to Firestore")
+    parser.add_argument("--study", default="", help="Firestore study name")
+    parser.add_argument("--experiment", default="", help="Firestore experiment name")
     args = parser.parse_args()
+
+    # Pass study/experiment to bridge via env
+    if args.study:
+        os.environ["STUDY_ID"] = args.study
+    if args.experiment:
+        os.environ["EXPERIMENT_CODE"] = args.experiment
 
     base = os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.abspath(os.path.join(base, args.log_dir))
