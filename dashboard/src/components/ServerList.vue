@@ -1,14 +1,17 @@
 <script setup>
-import { ref, computed, onUnmounted } from "vue";
+import { ref, onUnmounted } from "vue";
 import { useFirestore } from "../composables/useFirestore.js";
 import TerminalCard from "./TerminalCard.vue";
 import AsciiTable from "./AsciiTable.vue";
+import CopyButton from "./CopyButton.vue";
 
 const { servers } = useFirestore();
 
 const now = ref(Date.now());
 const tick = setInterval(() => { now.value = Date.now(); }, 1000);
 onUnmounted(() => clearInterval(tick));
+
+const showSetup = ref(false);
 
 const COLUMNS = [
   { key: "name", header: "NAME" },
@@ -20,6 +23,15 @@ const COLUMNS = [
   { key: "funnel", header: "FUNNEL" },
   { key: "seen", header: "SEEN" },
 ];
+
+const dockerCmd = `docker run -d --name amongi-server \\
+  -v $(pwd)/firebase-key.json:/app/engine/firebase-key.json:ro \\
+  -v amongi-logs:/app/log \\
+  -p 8081:8081 \\
+  amongi-server --render`;
+
+const composeYml = `# 1. Place firebase-key.json in engine/
+# 2. Run: docker compose up -d`;
 
 function formatCell(key, val, row) {
   if (key === "name") return { text: row.name || row.id || "?", bold: true };
@@ -69,5 +81,77 @@ function _ageText(row) {
       :row-delay="40"
     />
     <div v-else class="dim">(no servers connected)</div>
+
+    <!-- Setup instructions -->
+    <div class="setup-bar">
+      <span class="tab" :class="{ active: showSetup }" @click="showSetup = !showSetup">
+        {{ showSetup ? "[ - ]" : "[ + ]" }} setup instructions
+      </span>
+    </div>
+    <div v-if="showSetup" class="setup-body">
+      <div class="dim">Servers auto-register on first heartbeat. To add one:</div>
+      <br />
+
+      <div class="g">▸ docker compose</div>
+      <div class="setup-pre">$ cd AmongI &amp;&amp; docker compose up -d</div>
+      <br />
+
+      <div class="g">▸ docker run</div>
+      <div class="setup-pre">$ {{ dockerCmd }}</div>
+      <br />
+
+      <div class="g">▸ prerequisites</div>
+      <div class="dim">
+        1. Install <a class="g" href="https://docs.docker.com/get-docker/" target="_blank">Docker</a>
+        &nbsp;&nbsp;2. Place <span class="a">firebase-key.json</span> in <span class="a">engine/</span>
+        <br />
+        &nbsp;&nbsp;&nbsp;(Firebase Console → Project Settings → Service Accounts → Generate Key)
+        <br />
+        &nbsp;&nbsp;3. Build the image: <span class="a">docker compose build</span>
+      </div>
+      <br />
+
+      <div class="g">▸ flags (pass after image name)</div>
+      <div class="dim">
+        <span class="a">--name NAME</span>&nbsp;&nbsp;&nbsp;&nbsp;server display name (default: hostname)
+        <br />
+        <span class="a">--render</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;start render relay for remote Godot
+        <br />
+        <span class="a">--funnel</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;enable Tailscale funnel (requires Tailscale)
+        <br />
+        <span class="a">--study ID</span>&nbsp;&nbsp;&nbsp;&nbsp;only accept jobs for this study
+        <br />
+        <span class="a">--log-dir DIR</span>&nbsp;log output directory (default: /app/log)
+      </div>
+
+      <br />
+      <CopyButton :command="dockerCmd" label="copy docker command" />
+    </div>
   </TerminalCard>
 </template>
+
+<style scoped>
+.setup-bar {
+  padding: 4px 0 0 0;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.tab {
+  font-size: 13px; color: var(--text-dim); cursor: pointer;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--green); text-shadow: 0 0 5px rgba(79,232,124,0.3); }
+.setup-body {
+  font-size: 15px;
+  padding: 4px 0 4px calc(6px + 1ch);
+  line-height: 1.5;
+}
+.setup-pre {
+  color: var(--text);
+  white-space: pre-wrap;
+  padding: 2px 0;
+  font-size: 14px;
+}
+.setup-body a { text-decoration: none; }
+.setup-body a:hover { text-decoration: underline; }
+</style>
