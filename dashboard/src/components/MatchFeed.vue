@@ -1,40 +1,51 @@
 <script setup>
 import { computed } from "vue";
-import { TYPE } from "../composables/typeSettings.js";
-import TypedSpan from "./TypedSpan.vue";
+import AsciiTable from "./AsciiTable.vue";
 
 const props = defineProps({ games: Array });
-const recent = computed(() => [...(props.games || [])].reverse().slice(0, 20));
-function fmt(sec) { if (sec==null) return ""; const m=Math.floor(sec/60); return `${m}m${Math.round(sec%60)}s`; }
 
-const box = computed(() => {
-  const lines = recent.value.length
-    ? recent.value.map((g, i) => {
-        const ts = g.ended_at ? new Date(g.ended_at).toISOString().slice(0,16).replace('T',' ') : "?";
-        const w = g.winner || "?";
-        const wc = w === "crewmates" ? "g" : w === "imposters" ? "r" : "a";
-        return { delay: i * 80, line:
-          ` ${ts}  ${g.game_id||"?"}  <span class="${wc}">${w}</span>  k:<b>${g.kills||0}</b>  e:<b>${g.ejections||0}</b>  ${fmt(g.duration_sec)}` };
-      })
-    : [{ delay: 0, line: "  (no matches)" }];
-  const w = Math.max(...lines.map(l => l.line.replace(/<[^>]+>/g,"").length + 4), 36);
-  const title = "─ match log ";
-  return {
-    top: "┌" + title + "─".repeat(w - 2 - title.length) + "┐",
-    btm: "└" + "─".repeat(w - 2) + "┘",
-    lines,
-  };
+const columns = [
+  { key: "ts",       header: "ended",       align: "left" },
+  { key: "game_id",  header: "game",        align: "left" },
+  { key: "winner",   header: "winner",      align: "left" },
+  { key: "kills",    header: "k",           align: "right" },
+  { key: "ejections",header: "e",           align: "right" },
+  { key: "duration", header: "duration",    align: "left" },
+];
+
+function fmtDur(sec) {
+  if (sec == null) return "";
+  const m = Math.floor(sec / 60);
+  return `${m}m${Math.round(sec % 60)}s`;
+}
+
+function formatCell(key, value, row) {
+  if (key === "winner") {
+    const cls = value === "crewmates" ? "g" : value === "imposters" ? "r" : "a";
+    return { text: value, cls };
+  }
+  return { text: value };
+}
+
+const rows = computed(() => {
+  const recent = [...(props.games || [])].reverse().slice(0, 20);
+  return recent.map(g => ({
+    ts:        g.ended_at ? new Date(g.ended_at).toISOString().slice(0, 16).replace("T", " ") : "?",
+    game_id:   g.game_id || "?",
+    winner:    g.winner || "?",
+    kills:     String(g.kills || 0),
+    ejections: String(g.ejections || 0),
+    duration:  fmtDur(g.duration_sec),
+  }));
 });
 </script>
 
 <template>
-  <div class="card-box" v-if="box">
-    <div class="box-line box-top"><TypedSpan :text="box.top" :speed="TYPE.fast" /></div>
-    <div class="box-body">
-      <div v-for="l in box.lines" :key="l.delay">
-        <TypedSpan :text="l.line" :speed="TYPE.fast" :delay="200 + l.delay" />
-      </div>
-    </div>
-    <div class="box-line box-bot">{{ box.btm }}</div>
-  </div>
+  <AsciiTable
+    title="match log"
+    :columns="columns"
+    :rows="rows"
+    :formatCell="formatCell"
+    :minWidth="66"
+  />
 </template>

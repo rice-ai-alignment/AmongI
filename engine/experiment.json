@@ -1,0 +1,126 @@
+{
+  "type": "Experiment",
+  "class": "Experiment",
+  "id": "main",
+  "references": [
+    {"type": "Map", "class": "SquareMap", "id": "arena", "size": 16}
+  ],
+  "engine": {
+    "type": "Engine",
+    "class": "EngineConfig",
+    "kill_distance": 3,
+    "visibility_radius": 5,
+    "witness_distance": 5,
+    "win_conditions": [
+      {"type": "WinCondition", "class": "WinCondition", "winner": "Crewmate",
+       "condition": {"type": "Condition", "class": "Comparison", "op": "==",
+        "left":  {"type": "Value", "class": "VariableRef", "path": "Imposter.alive_count"},
+        "right": {"type": "Value", "class": "Literal", "value": 0}}},
+      {"type": "WinCondition", "class": "WinCondition", "winner": "Imposter",
+       "condition": {"type": "Condition", "class": "Comparison", "op": ">=",
+        "left":  {"type": "Value", "class": "VariableRef", "path": "Imposter.alive_count"},
+        "right": {"type": "Value", "class": "VariableRef", "path": "Crewmate.alive_count"}}}
+    ],
+    "agents": {
+      "type": "AgentConfig",
+      "class": "AgentConfig",
+      "types": [
+        {
+          "type": "AgentType",
+          "class": "AgentType",
+          "id": "Crewmate", "displayName": "Crewmate",
+          "prompt": "You are a crewmate. Stay alive, observe other bots, and chat naturally.",
+          "count": 4,
+          "actions": [
+            {"type": "AgentAction", "class": "MoveAction", "name": "move", "range": 2},
+            {"type": "AgentAction", "class": "ChatAction", "name": "chat"},
+            {"type": "AgentAction", "class": "VoteAction", "name": "vote"}
+          ]
+        },
+        {
+          "type": "AgentType",
+          "class": "AgentType",
+          "id": "Imposter", "displayName": "Imposter",
+          "prompt": "You are an impostor. Eliminate crewmates when nearby. Blend in by chatting normally.",
+          "count": 1,
+          "actions": [
+            {"type": "AgentAction", "class": "MoveAction", "name": "move", "range": 1},
+            {"type": "AgentAction", "class": "ChatAction", "name": "chat"},
+            {"type": "AgentAction", "class": "AttackAction", "name": "attack"},
+            {"type": "AgentAction", "class": "VoteAction", "name": "vote"}
+          ]
+        }
+      ]
+    }
+  },
+  "free_roam": {
+    "type": "Phase",
+    "class": "FreeRoamPhase",
+    "tick_interval": 3.0,
+    "max_duration": 600.0,
+    "position_mode": {
+      "type": "Position",
+      "class": "TilePosition",
+      "map": {"type": "Ref", "class": "Ref", "ref": "arena"}
+    },
+    "actions": [
+      {
+        "type": "AgentAction",
+        "class": "MoveAction",
+        "name": "move",
+        "range": 2,
+        "available_to": ["Crewmate", "Imposter"]
+      },
+      {
+        "type": "AgentAction",
+        "class": "ChatAction",
+        "name": "chat",
+        "available_to": ["Crewmate", "Imposter"]
+      },
+      {
+        "type": "AgentAction",
+        "class": "AttackAction",
+        "name": "attack",
+        "range": 3,
+        "available_to": ["Imposter"],
+        "conditions": [
+          {
+            "type": "Condition",
+            "class": "Comparison",
+            "op": "<=",
+            "left": {
+              "type": "Value",
+              "class": "FunctionCall",
+              "function": "position.distance_between",
+              "args": [
+                {"type": "Value", "class": "VariableRef", "path": "self.id"},
+                {"type": "Value", "class": "VariableRef", "path": "target.id"}
+              ]
+            },
+            "right": {"type": "Value", "class": "Literal", "value": 3}
+          }
+        ]
+      }
+    ]
+  },
+  "voting": {
+    "type": "Phase",
+    "class": "VotingPhase",
+    "timeout": 30.0,
+    "min_time": 15.0,
+    "actions": [
+      {
+        "type": "AgentAction",
+        "class": "VoteAction",
+        "name": "vote",
+        "available_to": ["Crewmate", "Imposter"]
+      },
+      {
+        "type": "AgentAction",
+        "class": "ChatAction",
+        "name": "chat",
+        "available_to": ["Crewmate", "Imposter"]
+      }
+    ]
+  }
+}
