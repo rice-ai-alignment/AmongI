@@ -235,11 +235,20 @@ let _serverUnsub = null;
 function startServerWatch() {
   const d = db();
   if (!d) return () => {};
-  if (_serverUnsub) _serverUnsub();  // Don't double-subscribe
-  _serverUnsub = d.collection("servers").onSnapshot(snap => {
-    servers.value = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-  });
-  return _serverUnsub;  // Return unsubscribe for cleanup
+  if (_serverUnsub) _serverUnsub();
+  _serverUnsub = d.collection("servers").onSnapshot(
+    snap => {
+      servers.value = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    },
+    err => {
+      // Collection or rules may not exist yet — silently ignore
+      if (!err.message?.includes?.("permission") && !err.code?.includes?.("permission")) {
+        console.warn("[dashboard] Server watch error:", err.message);
+      }
+      servers.value = [];
+    }
+  );
+  return _serverUnsub;
 }
 
 function stopServerWatch() {
@@ -260,20 +269,30 @@ async function loadUserPermissions(uid) {
     const snap = await d.collection("users").doc(uid).get();
     if (snap.exists) {
       userPermissions.value = snap.data();
-    } else {
-      // Auto-create user doc with flag disabled (user can't self-grant)
-      await d.collection("users").doc(uid).set({
-        uid: uid,
-        email: user.value?.email || "",
-        display_name: user.value?.displayName || "",
-        can_run_experiments: false,
-        created_at: firebase.firestore.FieldValue.serverTimestamp(),
-      });
-      userPermissions.value = { can_run_experiments: false };
+      return;
     }
   } catch (e) {
-    console.warn("[dashboard] loadUserPermissions failed:", e.message);
+    // Rules may not be deployed yet — continue to try creation
+    if (!e.message?.includes?.("permission") && !e.code?.includes?.("permission")) {
+      console.warn("[dashboard] loadUserPermissions read failed:", e.message);
+    }
   }
+  // Either doc doesn't exist or read was denied — try to create it
+  try {
+    await d.collection("users").doc(uid).set({
+      uid: uid,
+      email: user.value?.email || "",
+      display_name: user.value?.displayName || "",
+      can_run_experiments: false,
+      created_at: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    // Rules may not allow creation yet — just use a local default
+    if (!e.message?.includes?.("permission") && !e.code?.includes?.("permission")) {
+      console.warn("[dashboard] loadUserPermissions create failed:", e.message);
+    }
+  }
+  userPermissions.value = { can_run_experiments: false };
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────
@@ -284,15 +303,23 @@ function watchJobsForExperiment(studyId, expCode) {
   const d = db();
   if (!d) return () => {};
   if (_jobsUnsub) _jobsUnsub();
-  // Watch recent jobs for this experiment
   _jobsUnsub = d.collection("jobs")
     .where("study_id", "==", studyId)
     .where("experiment_code", "==", expCode)
     .orderBy("created_at", "desc")
     .limit(10)
-    .onSnapshot(snap => {
-      jobs.value = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    });
+    .onSnapshot(
+      snap => {
+        jobs.value = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      },
+      err => {
+        // Index or rules may not exist yet — silently ignore
+        if (!err.message?.includes?.("permission") && !err.message?.includes?.("index")) {
+          console.warn("[dashboard] Job watch error:", err.message);
+        }
+        jobs.value = [];
+      }
+    );
   return _jobsUnsub;
 }
 
