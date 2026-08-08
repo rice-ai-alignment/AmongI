@@ -1,0 +1,14 @@
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+.git
+dashboard
+among-i
+agent
+log
+*.jsonl
+.env
+.vscode
+.claude
+*.excalidraw
+firebase-key.json
