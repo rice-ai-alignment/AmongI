@@ -49,6 +49,8 @@ const expName = computed(() => experiments.value.find(e => e.id === activeExperi
 
 // Titlebar path
 const pathText = computed(() => {
+  if (navMode.value === "servers") return "~/servers";
+  if (navMode.value === "database") return "~/database";
   let p = "~/studies";
   if (activeStudyId.value) p += "/" + studyName.value;
   if (activeExperimentId.value) p += "/" + expName.value;
@@ -109,6 +111,14 @@ function restartPolling() {
 }
 // Sync URL path with current navigation state
 function syncURL() {
+  if (navMode.value === "servers") {
+    window.history.replaceState({}, "", "/servers");
+    return;
+  }
+  if (navMode.value === "database") {
+    window.history.replaceState({}, "", "/database");
+    return;
+  }
   let path = "/studies";
   if (activeStudyId.value) {
     path += "/" + (studyName.value || activeStudyId.value);
@@ -119,6 +129,7 @@ function syncURL() {
   window.history.replaceState({}, "", path);
 }
 
+watch(navMode, () => syncURL());
 watch(activeExperimentId, async (id) => {
   if (id) {
     // Clear old data immediately so stale stats don't flash

@@ -4,11 +4,15 @@ from experiment import ExperimentComponent, Param
 
 
 class AgentAction(ExperimentComponent):
-    """Base class for an agent action. Subclasses define specific behaviours."""
+    """Base class for an agent action. Subclasses define specific behaviours.
+    Each subclass sets ``action_key`` — the short name used in references
+    (available_to, conditions, etc.). No separate ``name`` param needed."""
+
     component_type = "AgentAction"
+    action_key: str = ""  # override in subclasses
+
     params = {
-        "name": Param(str, "", "Action identifier"),
-        "available_to": Param(list, [], "Agent type names allowed to use this action (empty = all)"),
+        "available_to": Param(list, [], "Agent type IDs allowed to use this action (empty = all)"),
         "conditions": Param(list, [], "Conditions that must be true for this action to be available"),
     }
 
@@ -25,15 +29,20 @@ class AgentAction(ExperimentComponent):
         Override in subclasses to declare what fields the LLM should output."""
         return {}
 
+    @property
+    def name(self) -> str:
+        """Backward-compat: use action_key as the name identifier."""
+        return self.action_key or self.__class__.__name__
+
     def description(self) -> str:
-        return self.name or self.__class__.__name__
+        return self.action_key or self.__class__.__name__
 
 
 class MoveAction(AgentAction):
     """Move the agent on the tile grid."""
+    action_key = "move"
     params = {
         **AgentAction.params,
-        "name": Param(str, "move", "Action identifier"),
         "range": Param(int, 2, "Max tiles per move in x or y"),
     }
 
@@ -67,10 +76,7 @@ class MoveAction(AgentAction):
 
 class ChatAction(AgentAction):
     """Send a chat message to nearby agents."""
-    params = {
-        **AgentAction.params,
-        "name": Param(str, "chat", "Action identifier"),
-    }
+    action_key = "chat"
 
     def execute(self, agent, decision_value, engine) -> list[dict]:
         msg = str(decision_value.get("chat", "")).strip()
@@ -87,9 +93,9 @@ class ChatAction(AgentAction):
 
 class AttackAction(AgentAction):
     """Attack the nearest agent within range."""
+    action_key = "attack"
     params = {
         **AgentAction.params,
-        "name": Param(str, "attack", "Action identifier"),
         "range": Param(int, 3, "Max tiles to reach a target"),
     }
 
@@ -111,10 +117,7 @@ class AttackAction(AgentAction):
 
 class VoteAction(AgentAction):
     """Cast a vote during the voting phase."""
-    params = {
-        **AgentAction.params,
-        "name": Param(str, "vote", "Action identifier"),
-    }
+    action_key = "vote"
 
     def execute(self, agent, decision_value, engine) -> list[dict]:
         vote_target = decision_value.get("vote", "skip") or "skip"

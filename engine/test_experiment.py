@@ -188,7 +188,8 @@ def test_builder_from_json():
     check(len(exp.engine.agents.types) == 2, "2 agent types")
     check(exp.engine.agents.types[0].name == "Crewmate", "first type is Crewmate")
     check(exp.engine.agents.types[1].name == "Imposter", "second type is Imposter")
-    check(exp.engine.agents.types[1].can("attack"), "imposter can attack")
+    phases = [exp.free_roam, exp.voting]
+    check(exp.engine.agents.types[1].can("attack", phases), "imposter can attack")
 
     # Map via proxy
     pmap = exp.free_roam.position_mode.map
