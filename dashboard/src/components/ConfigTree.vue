@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from "vue";
 import TerminalCard from "./TerminalCard.vue";
+import TypedSpan from "./TypedSpan.vue";
+import { TYPE } from "../composables/typeSettings.js";
 
 const props = defineProps({
   config: { type: Object, default: null },
