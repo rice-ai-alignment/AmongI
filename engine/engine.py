@@ -34,10 +34,10 @@ if _sys_base not in sys.path:
     sys.path.insert(0, _sys_base)
 
 from agent import Agent
-from context_manager import ContextManager, ChannelType
 from position import Tile
 from components.maps import SquareMap, CircleMap, FileMap, _MapBase as BaseMap
-from map_visualizer import MapVisualizer
+from components.map_visualizer import MapVisualizer
+from components.context_manager import ContextManager, ChannelType
 
 from render_client import RenderClient
 from event_store import EventStore
@@ -794,11 +794,12 @@ class GameEngine:
         for at in self._agent_types:
             self._groups[at.id] = AgentGroup(name=at.id, _engine=self)
 
-        # Determine agent type IDs from config (or fallback to legacy names)
+        # Determine agent type capabilities from phase actions
+        phases = [self.free_roam_phase, self.voting_phase]
         imp_type_id = "Imposter"
         crew_type_id = "Crewmate"
         for at in self._agent_types:
-            if at.can("attack"):
+            if at.has_action("attack", phases):
                 imp_type_id = at.id
             else:
                 crew_type_id = at.id
@@ -810,11 +811,22 @@ class GameEngine:
             p.is_active = True
             p.first_time = True
             p.tile = self.map.random_walkable_tile()
-            # Initialise context manager with constant channels
-            p.ctx = ContextManager(p.name, p.is_imposter)
-            p.ctx.set_constant("system", BASE_PROMPT)
-            p.ctx.set_constant("role",
-                IMPOSTOR_INSTRUCTIONS if p.is_imposter else CREWMATE_INSTRUCTIONS)
+            # Initialise context manager — use AgentType config if available
+            at = next((t for t in self._agent_types if t.id == p.agent_type_name), None)
+            if at and at.context_manager:
+                # Create from config template
+                p.ctx = ContextManager(p.name, p.is_imposter)
+                if at.context_manager.base_prompt:
+                    p.ctx.set_constant("system", at.context_manager.base_prompt)
+                else:
+                    p.ctx.set_constant("system", BASE_PROMPT)
+                p.ctx.set_constant("role",
+                    IMPOSTOR_INSTRUCTIONS if p.is_imposter else CREWMATE_INSTRUCTIONS)
+            else:
+                p.ctx = ContextManager(p.name, p.is_imposter)
+                p.ctx.set_constant("system", BASE_PROMPT)
+                p.ctx.set_constant("role",
+                    IMPOSTOR_INSTRUCTIONS if p.is_imposter else CREWMATE_INSTRUCTIONS)
             p.agent.set_intro(BASE_PROMPT)
             p.agent.tokens.reset()
             player_list.append({

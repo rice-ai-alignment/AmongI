@@ -31,11 +31,18 @@
           "id": "Crewmate", "displayName": "Crewmate",
           "prompt": "You are a crewmate. Stay alive, observe other bots, and chat naturally.",
           "count": 4,
-          "actions": [
-            {"type": "AgentAction", "class": "MoveAction", "name": "move", "range": 2},
-            {"type": "AgentAction", "class": "ChatAction", "name": "chat"},
-            {"type": "AgentAction", "class": "VoteAction", "name": "vote"}
-          ]
+          "context_manager": {
+            "type": "ContextManager",
+            "class": "ContextManager",
+            "channels": [
+              {"name": "system", "ctype": "constant"},
+              {"name": "role", "ctype": "constant"},
+              {"name": "events", "ctype": "continuous"},
+              {"name": "chat", "ctype": "continuous"},
+              {"name": "world_view", "ctype": "temporary"},
+              {"name": "nearby_bots", "ctype": "temporary"}
+            ]
+          }
         },
         {
           "type": "AgentType",
@@ -43,12 +50,18 @@
           "id": "Imposter", "displayName": "Imposter",
           "prompt": "You are an impostor. Eliminate crewmates when nearby. Blend in by chatting normally.",
           "count": 1,
-          "actions": [
-            {"type": "AgentAction", "class": "MoveAction", "name": "move", "range": 1},
-            {"type": "AgentAction", "class": "ChatAction", "name": "chat"},
-            {"type": "AgentAction", "class": "AttackAction", "name": "attack"},
-            {"type": "AgentAction", "class": "VoteAction", "name": "vote"}
-          ]
+          "context_manager": {
+            "type": "ContextManager",
+            "class": "ContextManager",
+            "channels": [
+              {"name": "system", "ctype": "constant"},
+              {"name": "role", "ctype": "constant"},
+              {"name": "events", "ctype": "continuous"},
+              {"name": "chat", "ctype": "continuous"},
+              {"name": "world_view", "ctype": "temporary"},
+              {"name": "nearby_bots", "ctype": "temporary"}
+            ]
+          }
         }
       ]
     }
@@ -67,20 +80,17 @@
       {
         "type": "AgentAction",
         "class": "MoveAction",
-        "name": "move",
         "range": 2,
         "available_to": ["Crewmate", "Imposter"]
       },
       {
         "type": "AgentAction",
         "class": "ChatAction",
-        "name": "chat",
         "available_to": ["Crewmate", "Imposter"]
       },
       {
         "type": "AgentAction",
         "class": "AttackAction",
-        "name": "attack",
         "range": 3,
         "available_to": ["Imposter"],
         "conditions": [
@@ -112,13 +122,11 @@
       {
         "type": "AgentAction",
         "class": "VoteAction",
-        "name": "vote",
         "available_to": ["Crewmate", "Imposter"]
       },
       {
         "type": "AgentAction",
         "class": "ChatAction",
-        "name": "chat",
         "available_to": ["Crewmate", "Imposter"]
       }
     ]

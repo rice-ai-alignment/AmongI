@@ -4,6 +4,9 @@ Three channel types:
   - CONSTANT:  System prompt + role instructions — set once, always at the top.
   - CONTINUOUS: Events that accumulate each tick (kills, chats, ejections).
   - TEMPORARY:  Per-turn context (world view, nearby bots) — shown only this tick.
+
+ContextManager is an ExperimentComponent so channels can be declared in config
+and wired to agent types.
 """
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+
+from experiment import ExperimentComponent, Param
 
 
 class ChannelType(Enum):
@@ -32,32 +37,64 @@ class ContextChannel:
         self.items.clear()
 
 
-class ContextManager:
-    """Manages typed channels that combine into an agent's prompt context.
+class ContextManager(ExperimentComponent):
+    """Configurable context builder — defines channels and prompt templates
+    for building agent context. One per agent type; the engine creates
+    runtime copies per agent from this template."""
 
-    Channels are rendered in order: CONSTANT → CONTINUOUS → TEMPORARY.
-    CONTINUOUS items persist across ticks (like chat history).
-    TEMPORARY items are cleared each tick after the prompt is built.
-    """
+    component_type = "ContextManager"
+    params = {
+        "base_prompt": Param(str, "", "Base system prompt for all agents"),
+        "channels": Param(list, [], "Channel definitions [{name, ctype}]"),
+    }
+    exposes = {
+        "variables": {},
+        "functions": {
+            "build_prompt": {"args": [], "returns": "str",
+                           "desc": "Build the full prompt from all channels"},
+            "build_messages": {"args": [], "returns": "list[dict]",
+                             "desc": "Build API-compatible messages from channels"},
+        },
+    }
 
-    def __init__(self, agent_name: str, is_imposter: bool = False):
+    def __init__(self, agent_name: str = "", is_imposter: bool = False, **kwargs):
+        # Pull config params from kwargs before passing to ExperimentComponent
+        cfg_channels = kwargs.pop("channels", None) or []
+        super().__init__(**kwargs)
         self.agent_name = agent_name
         self.is_imposter = is_imposter
         self.first_turn = True
         self.channels: dict[str, ContextChannel] = {}
 
-    def add_channel(self, name: str, ctype: ChannelType):
-        self.channels[name] = ContextChannel(name=name, ctype=ctype)
+        # Apply config channels if provided
+        for ch_def in cfg_channels:
+            ctype_str = ch_def.get("ctype", "continuous")
+            ctype = ChannelType.CONTINUOUS
+            if ctype_str == "constant":
+                ctype = ChannelType.CONSTANT
+            elif ctype_str == "temporary":
+                ctype = ChannelType.TEMPORARY
+            ch = self._add_channel(ch_def.get("name", ""), ctype)
+            if ch_def.get("content"):
+                if ctype == ChannelType.CONSTANT:
+                    ch.items = [ch_def["content"]]
+                elif ctype == ChannelType.TEMPORARY:
+                    ch.items = [ch_def["content"]]
+
+    def _add_channel(self, name: str, ctype: ChannelType) -> ContextChannel:
+        ch = ContextChannel(name=name, ctype=ctype)
+        self.channels[name] = ch
+        return ch
 
     def add(self, channel: str, item: str):
         if channel not in self.channels:
-            self.add_channel(channel, ChannelType.CONTINUOUS)
+            self._add_channel(channel, ChannelType.CONTINUOUS)
         self.channels[channel].add(item)
 
     def set_constant(self, channel: str, content: str):
         """Set a constant channel — replaces any previous value."""
         if channel not in self.channels:
-            self.add_channel(channel, ChannelType.CONSTANT)
+            self._add_channel(channel, ChannelType.CONSTANT)
         ch = self.channels[channel]
         ch.items = [content]
         ch.ctype = ChannelType.CONSTANT
@@ -65,7 +102,7 @@ class ContextManager:
     def set_temporary(self, channel: str, content: str):
         """Set temporary context for this tick only."""
         if channel not in self.channels:
-            self.add_channel(channel, ChannelType.TEMPORARY)
+            self._add_channel(channel, ChannelType.TEMPORARY)
         ch = self.channels[channel]
         ch.items = [content]
         ch.ctype = ChannelType.TEMPORARY
@@ -104,3 +141,6 @@ class ContextManager:
         if not prompt:
             return []
         return [{"role": "system", "content": prompt}]
+
+    def description(self) -> str:
+        return f"context manager ({len(self.channels)} channels)"

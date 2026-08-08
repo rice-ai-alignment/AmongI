@@ -68,7 +68,7 @@ class ExperimentConfig:
 
     def build_map(self, node: ConfigNode = None) -> Any:
         """Build a map from its config node."""
-        from map_data import FileMap, SquareMap, CircleMap
+        from components.map_data import FileMap, SquareMap, CircleMap
         if node is None:
             node = self.root.get_node("map")
         if node is None:

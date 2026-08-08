@@ -19,7 +19,13 @@ def experiment_to_runtime(exp):
     eng = exp.engine
     config = GameConfig()
     config.player_count = eng.agents.total
-    config.imposter_count = sum(t.count for t in eng.agents.types if t.can("attack"))
+    # Determine imposter count from phase actions: count agents of types
+    # that have AttackAction available in free_roam phase.
+    phases = [exp.free_roam, exp.voting]
+    config.imposter_count = sum(
+        t.count for t in eng.agents.types
+        if t.has_action("attack", phases)
+    )
     config.kill_distance = eng.kill_distance
     config.visibility_radius = eng.visibility_radius
     config.witness_distance = eng.witness_distance
