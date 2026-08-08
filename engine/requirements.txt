@@ -4,3 +4,4 @@ openai
 pydantic
 firebase_admin
 pyngrok
+psutil

@@ -228,6 +228,116 @@ async function fetchData() {
   }
 }
 
+// ── Server watch ────────────────────────────────────────────────────
+const servers = ref([]);
+let _serverUnsub = null;
+
+function startServerWatch() {
+  const d = db();
+  if (!d) return () => {};
+  if (_serverUnsub) _serverUnsub();  // Don't double-subscribe
+  _serverUnsub = d.collection("servers").onSnapshot(snap => {
+    servers.value = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  });
+  return _serverUnsub;  // Return unsubscribe for cleanup
+}
+
+function stopServerWatch() {
+  if (_serverUnsub) { _serverUnsub(); _serverUnsub = null; }
+}
+
+// ── User permissions ────────────────────────────────────────────────
+const userPermissions = ref(null);
+const canRunExperiments = computed(() =>
+  userPermissions.value?.can_run_experiments === true
+);
+
+async function loadUserPermissions(uid) {
+  if (!uid) { userPermissions.value = null; return; }
+  const d = db();
+  if (!d) return;
+  try {
+    const snap = await d.collection("users").doc(uid).get();
+    if (snap.exists) {
+      userPermissions.value = snap.data();
+    } else {
+      // Auto-create user doc with flag disabled (user can't self-grant)
+      await d.collection("users").doc(uid).set({
+        uid: uid,
+        email: user.value?.email || "",
+        display_name: user.value?.displayName || "",
+        can_run_experiments: false,
+        created_at: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      userPermissions.value = { can_run_experiments: false };
+    }
+  } catch (e) {
+    console.warn("[dashboard] loadUserPermissions failed:", e.message);
+  }
+}
+
+// ── Jobs ────────────────────────────────────────────────────────────
+const jobs = ref([]);
+let _jobsUnsub = null;
+
+function watchJobsForExperiment(studyId, expCode) {
+  const d = db();
+  if (!d) return () => {};
+  if (_jobsUnsub) _jobsUnsub();
+  // Watch recent jobs for this experiment
+  _jobsUnsub = d.collection("jobs")
+    .where("study_id", "==", studyId)
+    .where("experiment_code", "==", expCode)
+    .orderBy("created_at", "desc")
+    .limit(10)
+    .onSnapshot(snap => {
+      jobs.value = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    });
+  return _jobsUnsub;
+}
+
+function unwatchJobs() {
+  if (_jobsUnsub) { _jobsUnsub(); _jobsUnsub = null; }
+}
+
+async function queueJob({ studyId, experimentCode, config, maxGames }) {
+  const d = db();
+  if (!d || !user.value) throw new Error("Not authenticated");
+  const docRef = await d.collection("jobs").add({
+    study_id: studyId,
+    experiment_code: experimentCode,
+    config: config || {},
+    max_games: maxGames || 1,
+    created_by: user.value.uid,
+    created_at: firebase.firestore.FieldValue.serverTimestamp(),
+    status: "queued",
+    claimed_by: null,
+    claimed_at: null,
+    started_at: null,
+    finished_at: null,
+    error: null,
+    result: null,
+  });
+  return docRef.id;
+}
+
+// ── Config from Firestore ───────────────────────────────────────────
+async function loadExperimentConfig(studyId, expId) {
+  const d = db();
+  if (!d) return null;
+  try {
+    const snap = await d.collection(COLLECTION).doc(studyId)
+      .collection("experiments").doc(expId).get();
+    if (snap.exists) {
+      const data = snap.data();
+      return data.config || null;
+    }
+  } catch (e) {
+    console.warn("[dashboard] loadExperimentConfig failed:", e.message);
+  }
+  return null;
+}
+
 export function useFirestore() {
   return {
     // auth
@@ -241,5 +351,13 @@ export function useFirestore() {
     // data
     stats, games, statusKind, statusText, lastSync,
     fetchData,
+    // servers
+    servers, startServerWatch, stopServerWatch,
+    // user permissions
+    userPermissions, canRunExperiments, loadUserPermissions,
+    // jobs
+    jobs, watchJobsForExperiment, unwatchJobs, queueJob,
+    // config
+    loadExperimentConfig,
   };
 }

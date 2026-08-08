@@ -8,9 +8,8 @@ Agents are loaded directly via agent.agent.Agent — no WebSocket needed.
 Godot rendering is optional (--render).
 
 Usage:
-    python engine.py                      # headless (default)
+    python engine.py                      # headless (default 5 players)
     python engine.py --render             # with Godot on :8081
-    python engine.py --agent-count 7      # 7 players
 """
 
 from __future__ import annotations
@@ -29,12 +28,16 @@ from typing import Optional
 
 import dotenv
 
-# Allow imports from sibling agent/ directory
-_sys_base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Local imports (everything is in engine/ now)
+_sys_base = os.path.dirname(os.path.abspath(__file__))
 if _sys_base not in sys.path:
     sys.path.insert(0, _sys_base)
 
-from agent.agent import Agent
+from agent import Agent
+from context_manager import ContextManager, ChannelType
+from position import Tile
+from components.maps import SquareMap, CircleMap, FileMap, _MapBase as BaseMap
+from map_visualizer import MapVisualizer
 
 from render_client import RenderClient
 from event_store import EventStore
@@ -61,6 +64,7 @@ class GameConfig:
     agent_tick_interval: float = 3.0
     near_timeout_threshold: float = 5.0
     player_count: int = 5
+    token_limit: int = 100000
 
     agent_names: list[str] = field(default_factory=lambda: [
         "Red", "Blue", "Green", "Pink", "Orange",
@@ -84,16 +88,33 @@ class Phase(Enum):
 # ── Player State ──────────────────────────────────────────────────────────
 
 @dataclass
+class AgentGroup:
+    """Runtime stats for one agent type group. Registered in scope so
+    conditions can reference e.g. ``Imposter.alive_count``."""
+    name: str
+    _engine: object = None  # back-reference to GameEngine for live counting
+
+    @property
+    def alive_count(self) -> int:
+        if self._engine is None:
+            return 0
+        return sum(1 for p in self._engine._get_active_players()
+                   if getattr(p, "agent_type_name", None) == self.name)
+
+
+@dataclass
 class PlayerState:
     agent_id: int
     name: str
-    tile: tuple[int, int]
-    agent: Agent                          # direct reference — no WS needed
+    tile: Tile
+    agent: Agent
     is_imposter: bool = False
     is_active: bool = False
     color_index: int = 0
     index: int = 0
     first_time: bool = True
+    agent_type_name: str = ""
+    ctx: ContextManager | None = None
 
 
 # ── Prompt Templates ──────────────────────────────────────────────────────
@@ -134,95 +155,33 @@ def load_personas(persona_dir: str, count: int) -> list[str]:
 
 # ── Map Data ──────────────────────────────────────────────────────────────
 
-class MapData:
-    """Tile map with walkable-grid queries. Uses a built-in 16x16 square
-    platform by default. Pass a map_path to load a custom JSON layout."""
-
-    def __init__(self, map_path: Optional[str] = None):
-        if map_path:
-            self._load_from_file(map_path)
-        else:
-            print("[MapData] Using built-in default map (16x16 square platform).")
-            self._build_default()
-
-    def _load_from_file(self, map_path: str):
-        try:
-            with open(map_path, "r") as f:
-                data = json.load(f)
-            if not data.get("walkable"):
-                raise ValueError("map file has no walkable tiles")
-            self.width = data["width"]
-            self.height = data["height"]
-            self.min_x = data.get("min_x", 0)
-            self.max_x = data.get("max_x", self.min_x + self.width - 1)
-            self.min_y = data.get("min_y", 0)
-            self.max_y = data.get("max_y", self.min_y + self.height - 1)
-            self._walkable: set[tuple[int, int]] = set()
-            for coord in data["walkable"]:
-                self._walkable.add((coord[0], coord[1]))
-            print(f"[MapData] Loaded custom map {map_path} "
-                  f"({self.width}x{self.height}, {len(self._walkable)} walkable tiles)")
-        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
-            print(f"[MapData] WARNING: Cannot load {map_path}: {e}")
-            print("[MapData] Falling back to built-in default (16x16 square platform).")
-            self._build_default()
-
-    def _build_default(self):
-        """16x16 square platform — open interior with border walls."""
-        self.width = 16
-        self.height = 16
-        self.min_x = 0
-        self.max_x = 15
-        self.min_y = 0
-        self.max_y = 15
-        self._walkable: set[tuple[int, int]] = set()
-        for x in range(1, 15):
-            for y in range(1, 15):
-                self._walkable.add((x, y))
-
-    def is_walkable(self, x: int, y: int) -> bool:
-        return (x, y) in self._walkable
-
-    def get_ascii_world_view(self, center: tuple[int, int],
-                             radius: int = 3) -> str:
-        cx, cy = center
-        lines = []
-        for dy in range(-radius, radius + 1):
-            line = ""
-            for dx in range(-radius, radius + 1):
-                if dx == 0 and dy == 0:
-                    line += "@"
-                else:
-                    line += "." if self.is_walkable(cx + dx, cy + dy) else "#"
-            lines.append(line)
-        return "\n".join(lines)
-
-    def random_walkable_tile(self) -> tuple[int, int]:
-        return random.choice(list(self._walkable)) if self._walkable else (0, 0)
-
-    def distance(self, a: tuple[int, int], b: tuple[int, int]) -> float:
-        return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
-
-
 # ── Game Engine ───────────────────────────────────────────────────────────
 
 class GameEngine:
 
-    def __init__(self, config: GameConfig, map_data: MapData,
+    def __init__(self, config: GameConfig, map_data: BaseMap,
                  event_store: EventStore, render_client: Optional[RenderClient],
-                 personas: list[str]):
+                 personas: list[str],
+                 free_roam_phase=None, voting_phase=None, win_conditions=None):
         self.cfg = config
         self.map = map_data
+        self.visualizer = MapVisualizer(map_data)
         self.events = event_store
         self.render = render_client
         self.personas = personas
+        self.free_roam_phase = free_roam_phase
+        self.voting_phase = voting_phase
+        self.win_conditions = win_conditions or []
+        self._agent_types: list = []  # AgentType config objects from experiment
 
         self.phase: Phase = Phase.WAITING
         self.players: dict[int, PlayerState] = {}
+        self._groups: dict[str, AgentGroup] = {}  # name → AgentGroup
         self._game_timer: float = 0.0
         self._state_timer: float = 0.0
         self._phase_id: int = 0
         self._tick: int = 0
+        self._game_index: int = 0
         self._game_kills: int = 0
         self._game_ejections: int = 0
         self._player_kills: dict[int, int] = {}
@@ -235,12 +194,13 @@ class GameEngine:
         self._clear_memory_flags: dict[int, bool] = {}
 
         # Trace log — writes every prompt, response, and action
-        self._trace_file = None
+        self._trace_file = None          # session-level trace
+        self._game_trace_file = None     # per-game trace
+        self._experiment_config: dict = {}  # set by run.py for config export
+        self._recaps: list[dict] = []        # accumulated game summaries for run() return
 
     def _trace(self, category: str, data: dict):
-        """Write a trace event to the deep-logging trace file (pretty-printed)."""
-        if not self._trace_file:
-            return
+        """Write a trace event to both session and per-game trace files."""
         entry = {
             "timestamp": time.time(),
             "tick": self._tick,
@@ -249,8 +209,13 @@ class GameEngine:
             "category": category,
             **data,
         }
-        self._trace_file.write(json.dumps(entry, indent=2) + "\n\n")
-        self._trace_file.flush()
+        payload = json.dumps(entry, indent=2) + "\n\n"
+        if self._trace_file:
+            self._trace_file.write(payload)
+            self._trace_file.flush()
+        if self._game_trace_file:
+            self._game_trace_file.write(payload)
+            self._game_trace_file.flush()
 
     def _open_trace(self):
         if self.events.session_id:
@@ -259,11 +224,20 @@ class GameEngine:
             trace_path = os.path.join(trace_dir, "trace.jsonl")
             self._trace_file = open(trace_path, "w", encoding="utf-8")
             print(f"[Engine] Trace log: {os.path.abspath(trace_path)}")
+            # Export experiment config at session level
+            if self._experiment_config:
+                config_path = os.path.join(trace_dir, "config.json")
+                with open(config_path, "w") as cf:
+                    json.dump(self._experiment_config, cf, indent=2)
+                print(f"[Engine] Config exported: {os.path.abspath(config_path)}")
 
     def _close_trace(self):
         if self._trace_file:
             self._trace_file.close()
             self._trace_file = None
+        if self._game_trace_file:
+            self._game_trace_file.close()
+            self._game_trace_file = None
 
     # ── State helpers ─────────────────────────────────────────────────
 
@@ -288,6 +262,19 @@ class GameEngine:
     def _get_alive_imposters(self) -> int:
         return sum(1 for p in self._get_active_players() if p.is_imposter)
 
+    @property
+    def game_index(self) -> int:
+        return self._game_index
+
+    @property
+    def game_kills(self) -> int:
+        return self._game_kills
+
+    def alive_count(self, agent_type: str) -> int:
+        """Generic count of alive players matching a given agent type name."""
+        return sum(1 for p in self._get_active_players()
+                   if getattr(p, "agent_type_name", None) == agent_type)
+
     def _token_budget_exceeded(self) -> bool:
         """Check if any agent has exceeded its token budget."""
         for p in self.players.values():
@@ -298,12 +285,11 @@ class GameEngine:
         return False
 
     def check_win_condition(self) -> dict:
-        crew = self._get_alive_crewmates()
-        imp = self._get_alive_imposters()
-        if imp == 0 and (crew + imp) > 0:
-            return {"game_over": True, "winner": "crewmates"}
-        elif crew <= imp and (crew + imp) > 0:
-            return {"game_over": True, "winner": "imposters"}
+        """Check win conditions — delegates to configured WinConditions."""
+        for wc in self.win_conditions:
+            result = wc.check(self)
+            if result and result.get("winner"):
+                return {"game_over": True, "winner": result["winner"]}
         return {"game_over": False, "winner": ""}
 
     # ── Prompt building ───────────────────────────────────────────────
@@ -358,8 +344,8 @@ class GameEngine:
 
     def get_relative_player_data(self, observer: PlayerState,
                                   other: PlayerState) -> dict:
-        dx = other.tile[0] - observer.tile[0]
-        dy = other.tile[1] - observer.tile[1]
+        dx = other.tile.x - observer.tile.x
+        dy = other.tile.y - observer.tile.y
         return {
             "distance": math.sqrt(dx*dx + dy*dy),
             "delta_x": dx, "delta_y": -dy,
@@ -371,7 +357,7 @@ class GameEngine:
     def build_context(self, player: PlayerState) -> dict:
         base = {
             "id": player.agent_id,
-            "pos": {"x": player.tile[0], "y": player.tile[1]},
+            "pos": {"x": player.tile.x, "y": player.tile.y},
             "name": player.name,
             "is_imposter": player.is_imposter,
             "phase_id": self._phase_id,
@@ -457,14 +443,60 @@ class GameEngine:
 
     # ── Agent calling ─────────────────────────────────────────────────
 
-    async def _ask_agents(self, players: list[PlayerState]) -> dict[int, dict]:
+    async def _ask_agents(self, players: list[PlayerState],
+                           is_voting: bool = False) -> dict[int, dict]:
         """Call each agent's LLM in parallel via thread pool. Returns agent_id -> decision."""
         phase = self._phase_id
         async def _call_one(p: PlayerState) -> tuple[int, dict]:
-            ctx = self.build_context(p)
-            decision = await asyncio.to_thread(p.agent.think, ctx)
-            # Trace the exact messages sent to the LLM.
-            # Clean up: parse any JSON content strings into objects.
+            # Set temporary per-turn context
+            if p.first_time:
+                p.ctx.set_temporary("first_turn", "This is your first turn — introduce yourself!")
+                p.first_time = False
+            else:
+                p.ctx.channels.pop("first_turn", None)
+
+            # World view + nearby bots
+            radius = self.cfg.visibility_radius
+            world_view = self.visualizer.render(p.tile, radius)
+            p.ctx.set_temporary("world_view", world_view)
+
+            other_bots = []
+            for other in self._get_active_players():
+                if other.agent_id == p.agent_id:
+                    continue
+                rel = self.get_relative_player_data(p, other)
+                if abs(rel["delta_x"]) <= radius and abs(rel["delta_y"]) <= radius:
+                    other_bots.append(rel)
+            if other_bots:
+                bot_lines = "\n".join(
+                    f"  {b['name']}: dx={b['delta_x']:+d}, dy={b['delta_y']:+d} (dist {b['distance']:.0f})"
+                    for b in other_bots)
+                p.ctx.set_temporary("nearby_bots", f"Other bots visible to you:\n{bot_lines}")
+            else:
+                p.ctx.set_temporary("nearby_bots", "No other bots nearby.")
+
+            # Voting context
+            if is_voting:
+                player_names = [pl.name for pl in self._get_active_players()]
+                vote_info = f"Players: {', '.join(player_names)}\n"
+                vote_info += "Current votes:\n"
+                for voter_id, target in self.vote_choices.items():
+                    vp = self.players.get(voter_id)
+                    vote_info += f"  {vp.name if vp else 'Unknown'} -> {target}\n"
+                p.ctx.set_temporary("voting", vote_info)
+
+            # Build context dict for the agent
+            prompt = p.ctx.build_prompt()
+            action_schema = self.get_action_schema(p, is_voting)
+            ctx_dict = {
+                "prompt": prompt,
+                "action_schema": action_schema,
+                "phase_id": phase,
+                "is_imposter": p.is_imposter,
+                "name": p.name,
+            }
+            decision = await asyncio.to_thread(p.agent.think, ctx_dict)
+            # Trace
             api_msgs = []
             for m in p.agent.last_api_messages:
                 content = m.get("content", "")
@@ -505,13 +537,13 @@ class GameEngine:
 
         # ── Move ──
         if move_x != 0 or move_y != 0:
-            old = player.tile
-            nx, ny = old[0] + move_x, old[1] - move_y
+            old = player.tile.copy()
+            nx, ny = old.x + move_x, old.y - move_y
             if self.map.is_walkable(nx, ny):
-                player.tile = (nx, ny)
+                player.tile = Tile(nx, ny)
                 actions.append({
                     "type": "move",
-                    "from": {"x": old[0], "y": old[1]},
+                    "from": {"x": old.x, "y": old.y},
                     "to": {"x": nx, "y": ny},
                 })
 
@@ -579,15 +611,15 @@ class GameEngine:
             "type": "say",
             "message": message,
             "broadcast": broadcast,
-            "pos": {"x": player.tile[0], "y": player.tile[1]},
+            "pos": {"x": player.tile.x, "y": player.tile.y},
         }
         for other in self._get_active_players():
             if other.agent_id == player.agent_id:
                 continue
             if self.map.distance(player.tile, other.tile) <= self.cfg.chat_distance or broadcast:
-                dx = player.tile[0] - other.tile[0]
-                dy = other.tile[1] - player.tile[1]  # Y-up for display
-                other.agent.add_message("user", f"{chat_line}  (dx={dx:+d}, dy={dy:+d})")
+                dx = player.tile.x - other.tile.x
+                dy = other.tile.y - player.tile.y  # Y-up for display
+                other.ctx.add("chat", f"{chat_line}  (dx={dx:+d}, dy={dy:+d})")
         return action
 
     # ── Kill logic ────────────────────────────────────────────────────
@@ -621,14 +653,14 @@ class GameEngine:
                                     "victim": victim.name, "witnesses": witnesses})
         print(f"{victim.name} was killed by {killer.name} — witnesses: {witnesses}")
 
-        # Push kill event into all agents' persistent message history.
+        # Push kill event into all agents' continuous event channel.
         for p in self._get_active_players():
             if p.agent_id == killer.agent_id:
-                p.agent.add_message("user", f"You killed {victim.name}!")
+                p.ctx.add("events", f"You killed {victim.name}!")
             elif p.name in witnesses:
-                p.agent.add_message("user", f"YOU WITNESSED: {killer.name} killed {victim.name}!")
+                p.ctx.add("events", f"YOU WITNESSED: {killer.name} killed {victim.name}!")
             else:
-                p.agent.add_message("user", f"{victim.name} was found dead!")
+                p.ctx.add("events", f"{victim.name} was found dead!")
 
         result = self.check_win_condition()
         if result["game_over"]:
@@ -654,9 +686,9 @@ class GameEngine:
             "active_agent_ids": [p.agent_id for p in active],
             "timeout": int(self.cfg.vote_timeout),
         })
-        # Push voting start into all agents' persistent message history.
+        # Push voting start into all agents' continuous event channel.
         for p in active:
-            p.agent.add_message("user",
+            p.ctx.add("events",
                 f"Emergency meeting! Vote for who you think is the impostor. "
                 f"You have {int(self.cfg.vote_timeout)} seconds.")
 
@@ -696,10 +728,10 @@ class GameEngine:
                  "victim": victim.name, "was_imposter": victim.is_imposter})
             await self._emit("system", "system_message",
                              {"message": f"{victim.name} was ejected!"})
-            # Push ejection into all players' message history.
+            # Push ejection into all players' continuous event channel.
             imposter_note = " (was the impostor!)" if victim.is_imposter else " (was a crewmate)"
             for p in self.players.values():
-                p.agent.add_message("user", f"{victim.name} was ejected!{imposter_note}")
+                p.ctx.add("events", f"{victim.name} was ejected!{imposter_note}")
             await self._emit("voting", "result", {
                 "agent_id": victim.agent_id,
                 "ejected": victim.name, "was_imposter": victim.is_imposter,
@@ -723,6 +755,7 @@ class GameEngine:
     async def _start_game(self):
         if not self.players:
             return
+        self._game_index += 1
         self.phase = Phase.PLAYING
         self._game_timer = self.cfg.game_max_length
         self.recent_events.clear()
@@ -735,21 +768,54 @@ class GameEngine:
         self.events.start_game()
         gid = self.events.game_id
         print(f"Game {gid} Starting!")
+        # Open per-game trace file and export config
+        if self.events.session_id:
+            game_trace_dir = os.path.join(self.events.log_dir, self.events.session_id, gid)
+            os.makedirs(game_trace_dir, exist_ok=True)
+            game_trace_path = os.path.join(game_trace_dir, "trace.jsonl")
+            self._game_trace_file = open(game_trace_path, "w", encoding="utf-8")
+            # Export per-game config (may differ per game index)
+            if self._experiment_config:
+                game_config = dict(self._experiment_config)
+                game_config["game_index"] = self._game_index
+                config_path = os.path.join(game_trace_dir, "config.json")
+                with open(config_path, "w") as cf:
+                    json.dump(game_config, cf, indent=2)
         self._trace("game_event", {"type": "game_start", "game_id": gid})
 
         active_ids = list(self.players.keys())
         imposter_ids = set(random.sample(
             active_ids, min(self.cfg.imposter_count, len(active_ids))))
 
+        # Build agent groups from configured types
+        self._groups.clear()
+        if not self._agent_types:
+            raise RuntimeError("No agent types configured — cannot build agent groups")
+        for at in self._agent_types:
+            self._groups[at.id] = AgentGroup(name=at.id, _engine=self)
+
+        # Determine agent type IDs from config (or fallback to legacy names)
+        imp_type_id = "Imposter"
+        crew_type_id = "Crewmate"
+        for at in self._agent_types:
+            if at.can("attack"):
+                imp_type_id = at.id
+            else:
+                crew_type_id = at.id
+
         player_list = []
         for pid, p in self.players.items():
             p.is_imposter = (pid in imposter_ids)
+            p.agent_type_name = imp_type_id if p.is_imposter else crew_type_id
             p.is_active = True
             p.first_time = True
             p.tile = self.map.random_walkable_tile()
-            # Reset agent message history with fresh intro
-            intro = self.build_intro(p)
-            p.agent.set_intro(intro)
+            # Initialise context manager with constant channels
+            p.ctx = ContextManager(p.name, p.is_imposter)
+            p.ctx.set_constant("system", BASE_PROMPT)
+            p.ctx.set_constant("role",
+                IMPOSTOR_INSTRUCTIONS if p.is_imposter else CREWMATE_INSTRUCTIONS)
+            p.agent.set_intro(BASE_PROMPT)
             p.agent.tokens.reset()
             player_list.append({
                 "agent_id": p.agent_id, "name": p.name,
@@ -791,6 +857,12 @@ class GameEngine:
             p.is_active = False
         await self._emit("system", "game_end", {"winner": reason, "recap": recap})
         self.events.end_game(recap)
+        # Close per-game trace
+        if self._game_trace_file:
+            self._game_trace_file.close()
+            self._game_trace_file = None
+        # Accumulate recap for run() summary
+        self._recaps.append(recap)
         await self._start_starting()
 
     async def _start_starting(self):
@@ -802,9 +874,14 @@ class GameEngine:
 
     # ── Main game loop ────────────────────────────────────────────────
 
-    async def run(self):
+    async def run(self, max_games: Optional[int] = None) -> dict:
         print("[Engine] Starting...")
         self.events.start_session()
+        # Send map data to both logs and Godot so the renderer can initialise
+        await self._emit("system", "map_data", self.map.serialize())
+        # Also log the experiment config as a system event
+        if self._experiment_config:
+            self.events.log_event("system", "config", self._experiment_config)
         self._open_trace()
 
         if self.render:
@@ -821,6 +898,7 @@ class GameEngine:
 
         await self._start_starting()
         last_tick_time = time.time()
+        summary = {}
 
         try:
             while True:
@@ -836,6 +914,10 @@ class GameEngine:
 
                 if self.phase == Phase.STARTING:
                     if self._state_timer <= 0:
+                        if max_games is not None and self._game_index >= max_games:
+                            print(f"[Engine] Reached max_games ({max_games}) — stopping")
+                            summary = self._build_summary()
+                            break
                         await self._start_game()
                 elif self.phase == Phase.PLAYING:
                     if self._game_timer <= 0:
@@ -865,12 +947,34 @@ class GameEngine:
 
         except KeyboardInterrupt:
             print("\n[Engine] Interrupted — shutting down...")
+            summary = self._build_summary()
         finally:
             self.events.end_session()
             self._close_trace()
             if self.render:
                 await self.render.close()
             print("[Engine] Stopped.")
+        return summary
+
+    def _build_summary(self) -> dict:
+        """Build a summary dict from accumulated recaps."""
+        by_winner = {"crewmates": 0, "imposters": 0, "timeout": 0, "token_limit": 0}
+        total_kills = 0
+        total_ejections = 0
+        for g in self._recaps:
+            w = g.get("winner", "unknown")
+            if w in by_winner:
+                by_winner[w] += 1
+            total_kills += g.get("kills", 0)
+            total_ejections += g.get("ejections", 0)
+        return {
+            "session_id": self.events.session_id,
+            "games": len(self._recaps),
+            "total_kills": total_kills,
+            "total_ejections": total_ejections,
+            "by_winner": by_winner,
+            "recaps": self._recaps,
+        }
 
     async def _tick_playing(self):
         active = self._get_active_players()
@@ -881,7 +985,7 @@ class GameEngine:
             await self._end_game("token_limit")
             return
 
-        decisions = await self._ask_agents(active)
+        decisions = await self._ask_agents(active, is_voting=False)
         for p in active:
             decision = decisions.get(p.agent_id, {})
             if not decision:
@@ -908,7 +1012,7 @@ class GameEngine:
                 await self._finalize_voting()
             return
 
-        decisions = await self._ask_agents(pending)
+        decisions = await self._ask_agents(pending, is_voting=True)
         for p in pending:
             decision = decisions.get(p.agent_id, {})
             if not decision or decision.get("phase_id") != self._phase_id:
@@ -927,11 +1031,12 @@ class GameEngine:
         for i in range(n):
             name = self.cfg.agent_names[i % len(self.cfg.agent_names)]
             agent = Agent(persona=personas[i], name=name)
+            agent.tokens.limit = self.cfg.token_limit
             self.players[i] = PlayerState(
                 agent_id=i, name=name, agent=agent,
                 tile=self.map.random_walkable_tile(),
                 color_index=i % len(self.cfg.agent_colors), index=i)
-        print(f"[Engine] {n} players ready")
+        print(f"[Engine] {n} players ready (token budget: {self.cfg.token_limit})")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────
@@ -943,18 +1048,18 @@ async def main():
                    help="Connect to Godot renderer on :8081")
     p.add_argument("--render-host", default="localhost")
     p.add_argument("--render-port", type=int, default=8081)
-    p.add_argument("--agent-count", type=int, default=5,
-                   help="Number of players")
     p.add_argument("--map", default=None, help="Path to map JSON (default: built-in square platform)")
     p.add_argument("--log-dir", default="../log")
+    p.add_argument("--max-games", type=int, default=None, help="Stop after N games (default: run forever)")
     args = p.parse_args()
 
     base = os.path.dirname(os.path.abspath(__file__))
     config = GameConfig()
-    config.player_count = args.agent_count
 
-    map_path = os.path.join(base, args.map) if args.map else None
-    map_data = MapData(map_path)
+    if args.map:
+        map_data = FileMap(os.path.join(base, args.map))
+    else:
+        map_data = SquareMap(16)
     log_dir = os.path.abspath(os.path.join(base, args.log_dir))
     event_store = EventStore(log_dir=log_dir)
     print(f"[Engine] Logs: {log_dir}")
@@ -964,7 +1069,8 @@ async def main():
         render_client = RenderClient(args.render_host, args.render_port)
 
     engine = GameEngine(config, map_data, event_store, render_client, [])
-    await engine.run()
+    summary = await engine.run(max_games=args.max_games)
+    print(f"[Engine] Summary: {json.dumps(summary, indent=2) if summary else 'none'}")
 
 
 if __name__ == "__main__":

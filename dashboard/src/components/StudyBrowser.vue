@@ -4,6 +4,8 @@ import { useFirestore } from "../composables/useFirestore.js";
 import { useTypewriter } from "../composables/useTypewriter.js";
 import { TYPE } from "../composables/typeSettings.js";
 import TypedSpan from "./TypedSpan.vue";
+import ConfirmPopup from "./ConfirmPopup.vue";
+import StaggerBlock from "./StaggerBlock.vue";
 
 const {
   user, studies, activeStudyId, loadStudies, createStudy, archiveStudy,
@@ -122,7 +124,7 @@ watch(activeStudyId, (id) => {
   <!-- Sidebar when browsing experiments -->
   <div class="side-panel" v-else :key="activeStudyId">
     <div class="box-label" ref="sideLabel"></div>
-    <div class="side-list type-block">
+    <StaggerBlock class="side-list">
       <div
         v-for="e in experiments"
         :key="e.id"
@@ -131,7 +133,7 @@ watch(activeStudyId, (id) => {
         @click="selectExperiment(e.id)"
       > <TypedSpan :text="e.name" :speed="TYPE.slow" /> <span v-if="user" class="archive-btn" @click.stop="confirmArchive = { type: 'experiment', id: e.id, name: e.name }" title="archive">[x]</span></div>
       <div class="exp-item dim" v-if="!experiments.length">  (empty)</div>
-    </div>
+    </StaggerBlock>
     <div class="cmd-line" style="margin-top:4px" v-if="user">
       <span v-if="creating">creating...</span>
       <span v-else>$ <input v-model="input" @keyup.enter="runCmd('create experiment '+input)" :placeholder="'create experiment name'" class="side-inp" /></span>
@@ -139,48 +141,38 @@ watch(activeStudyId, (id) => {
     <div class="cmd-line dim back-link" @click="backToStudies">$ cd ..</div>
   </div>
 
-  <!-- Archive confirmation popup -->
-  <div class="popup-overlay" v-if="confirmArchive" @click="confirmArchive = null">
-    <div class="popup" @click.stop>
-      <div class="card-box" style="min-width:200px">
-        <div class="card-head">confirm</div>
-        <div class="card-body">
-          <div><TypedSpan :text="'archive ' + confirmArchive.name + '?'" :speed="20" /></div>
-          <div class="popup-acts">
-            <span class="pop-link" @click="confirmArchive = null"><TypedSpan text="[ cancel ]" :speed="15" :delay="400" /></span>
-            <span class="pop-link r" @click="
-              confirmArchive.type === 'study'
-                ? archiveStudy(confirmArchive.id)
-                : archiveExperiment(confirmArchive.id);
-              confirmArchive = null;
-            "><TypedSpan text="[ archive ]" :speed="15" :delay="600" /></span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- Archive confirmation popup (reusable component) -->
+  <ConfirmPopup
+    v-if="confirmArchive"
+    :message="'archive ' + confirmArchive.name + '?'"
+    :buttons="[
+      { text: '[ cancel ]', action: 'cancel' },
+      { text: '[ archive ]', action: 'confirm', danger: true },
+    ]"
+    @action="(act) => {
+      if (act === 'confirm') {
+        confirmArchive.type === 'study'
+          ? archiveStudy(confirmArchive.id)
+          : archiveExperiment(confirmArchive.id);
+      }
+      confirmArchive = null;
+    }"
+  />
 </template>
 
 <style scoped>
 /* ── Cards ────────────────────────────────────────────────────── */
 .browser { flex: 1; }
-.box-label { font-size: 7px; color: var(--green); text-shadow: 0 0 6px rgba(79,232,124,0.4); margin-bottom: 6px; animation: glow-in 0.5s ease; }
+.box-label { font-size: 18px; color: var(--green); text-shadow: 0 0 6px rgba(79,232,124,0.4); margin-bottom: 6px; animation: glow-in 0.5s ease; }
 @keyframes glow-in { from { text-shadow: 0 0 0 transparent; } to { text-shadow: 0 0 6px rgba(79,232,124,0.4); } }
 @keyframes type-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes blink-flash { 0% { opacity: 0; } 2% { opacity: 1; background: rgba(79,232,124,0.08); } 4% { opacity: 0; background: transparent; } 100% { opacity: 0; } }
-.type-block > * { animation: type-in 0.25s ease backwards; position: relative; }
-.type-block > *::before { content: ""; position: absolute; inset: 0; pointer-events: none; animation: blink-flash 0.3s ease backwards; }
-.type-block > *:nth-child(1) { animation-delay: 0.15s; }
-.type-block > *:nth-child(2) { animation-delay: 0.25s; }
-.type-block > *:nth-child(3) { animation-delay: 0.35s; }
-.type-block > *:nth-child(4) { animation-delay: 0.45s; }
-.type-block > *:nth-child(5) { animation-delay: 0.55s; }
-.type-block > *:nth-child(6) { animation-delay: 0.65s; }
-.type-block > *:nth-child(7) { animation-delay: 0.75s; }
-.type-block > *:nth-child(8) { animation-delay: 0.85s; }
+/* staggered type-in rules are now in StaggerBlock.vue */
+.side-list :deep(*) { position: relative; }
+.side-list :deep(*)::before { content: ""; position: absolute; inset: 0; pointer-events: none; animation: blink-flash 0.3s ease backwards; }
 .card-grid { display: flex; flex-wrap: wrap; gap: 10px; }
 .ascii-card {
-  cursor: pointer; color: var(--text-dim); line-height: 1.55; white-space: nowrap; font-size: 7px;
+  cursor: pointer; color: var(--text-dim); line-height: 1.55; white-space: nowrap; font-size: 18px;
   transition: all 0.2s ease;
   animation: card-slide 0.35s ease backwards;
 }
@@ -194,7 +186,7 @@ watch(activeStudyId, (id) => {
 .ascii-card:hover { transform: translateY(-1px); }
 .ascii-card:hover .card-name { color: var(--green); text-shadow: 0 0 5px rgba(79,232,124,0.3); }
 .ascii-card:active { transform: translateY(0); }
-.card-top, .card-bot { color: rgba(79,232,124,0.3); text-shadow: 0 0 4px rgba(79,232,124,0.15); }
+.card-top, .card-bot { color: var(--border-solid); text-shadow: 0 0 4px rgba(79,232,124,0.3); }
 .card-row { color: var(--text-dim); }
 .card-name { color: var(--text); }
 .exp-in-card { cursor: pointer; }
@@ -203,36 +195,30 @@ watch(activeStudyId, (id) => {
 .card-new:hover { opacity: 0.8; }
 .card-inp {
   background: transparent; border: none; border-bottom: 1px solid rgba(79,232,124,0.2);
-  color: var(--text); font: 7px var(--font-mono); outline: none; flex: 1; min-width: 0;
+  color: var(--text); font: 18px var(--font-mono); outline: none; flex: 1; min-width: 0;
 }
 .card-inp:focus { border-bottom-color: var(--green); }
 .dim { color: var(--text-dim); }
 .hint { margin-top: 8px; }
 
 /* ── Side panel ────────────────────────────────────────────────── */
-.side-panel { width: 160px; flex-shrink: 0; border-right: 2px solid rgba(79,232,124,0.15); padding-right: 8px; }
+.side-panel { width: 30ch; flex-shrink: 0; border-right: 2px solid var(--border-solid); padding-right: 1ch; }
 .side-list { margin: 4px 0; }
-.exp-item { font-size: 7px; padding: 2px 0; cursor: pointer; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: all 0.15s ease; }
+.exp-item { font-size: 18px; padding: 2px 0; cursor: pointer; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: all 0.15s ease; }
 .exp-item:hover { color: var(--text); padding-left: 2px; }
 .exp-item.active { color: var(--green); text-shadow: 0 0 5px rgba(79,232,124,0.3); }
 .side-inp {
   background: transparent; border: none; border-bottom: 1px solid rgba(79,232,124,0.15);
-  color: var(--text); font: 7px var(--font-mono); outline: none; width: 120px;
+  color: var(--text); font: 18px var(--font-mono); outline: none; width: 24ch;
 }
 .side-inp::placeholder { color: var(--text-dim); }
-.cmd-line { font-size: 7px; padding: 1px 0; }
+.cmd-line { font-size: 18px; padding: 1px 0; }
 .back-link { cursor: pointer; margin-top: 6px; }
 .back-link:hover { color: var(--green); }
-.archive-btn { color: var(--text-dim); font-size: 6px; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
+.archive-btn { color: var(--text-dim); font-size: 10px; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
 .ascii-card:hover .archive-btn, .exp-item:hover .archive-btn { opacity: 0.6; }
 .archive-btn:hover { opacity: 1 !important; color: var(--red); }
 .desc { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 .creating { color: var(--amber); animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-.popup-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.popup-acts { display: flex; gap: 14px; justify-content: center; margin-top: 6px; }
-.pop-link { color: var(--text-dim); cursor: pointer; font-size: 7px; }
-.pop-link:hover { color: var(--text); }
-.pop-link.r { color: var(--red); }
-.pop-link.r:hover { color: var(--red); text-shadow: 0 0 4px rgba(255,85,85,0.4); }
 </style>

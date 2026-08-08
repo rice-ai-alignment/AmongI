@@ -36,5 +36,58 @@ service cloud.firestore {
         }
       }
     }
+
+    // ── Servers ──────────────────────────────────────────────────
+    match /servers/{serverId} {
+      // Anyone can read server status (public dashboard)
+      allow read: if true;
+      // Only Admin SDK (server handler) writes — no client write allowed
+      allow write: if false;
+    }
+
+    // ── Jobs ─────────────────────────────────────────────────────
+    match /jobs/{jobId} {
+      // Anyone can read jobs (public experiment status pages)
+      allow read: if true;
+
+      // Authenticated users can create queued jobs
+      allow create: if request.auth != null
+                    && request.resource.data.created_by == request.auth.uid
+                    && request.resource.data.status == "queued";
+
+      // Users can update their own jobs (cancel only — status transitions
+      // are handled by server Admin SDK which bypasses rules)
+      allow update: if request.auth != null
+                    && resource.data.created_by == request.auth.uid;
+
+      allow delete: if false;
+    }
+
+    // ── Server Usage ─────────────────────────────────────────────
+    match /server_usage/{docId} {
+      // Anyone can read usage logs
+      allow read: if true;
+      // Only Admin SDK writes — no client write allowed
+      allow write: if false;
+    }
+
+    // ── Users ────────────────────────────────────────────────────
+    match /users/{userId} {
+      // Users can read their own profile
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Users can create their own profile (with can_run_experiments forced to false)
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.can_run_experiments == false;
+
+      // Users can update their profile but cannot change can_run_experiments
+      // (only Admin SDK can flip that flag)
+      allow update: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.can_run_experiments == resource.data.can_run_experiments;
+
+      allow delete: if false;
+    }
   }
 }
