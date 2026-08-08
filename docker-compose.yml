@@ -1,12 +1,15 @@
 # Among-I Server — Docker Compose
 #
-# Usage:
-#   1. Place firebase-key.json in engine/ (from Firebase Console → Service Accounts)
-#   2. docker compose up -d
-#   3. Check logs: docker compose logs -f
+# No local repo needed — the Dockerfile clones the repo at build time.
+# You only need:
+#   1. This file + the Dockerfile in the same directory
+#   2. firebase-key.json (from Firebase Console → Service Accounts)
 #
-# Multiple servers on one host: docker compose -p server2 up -d
-#   (the --name flag defaults to hostname; override: SERVER_NAME=my-node)
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f
+#
+# Multiple servers: SERVER_NAME=node2 docker compose -p node2 up -d
 
 version: "3.8"
 
@@ -20,7 +23,7 @@ services:
     # ── Volumes ──────────────────────────────────────────────────────
     volumes:
       # Service account key (required, read-only)
-      - ./engine/firebase-key.json:/app/engine/firebase-key.json:ro
+      - ./firebase-key.json:/app/engine/firebase-key.json:ro
       # Log output (persisted between restarts)
       - amongi-logs:/app/log
 
@@ -31,15 +34,13 @@ services:
 
     # ── Environment ──────────────────────────────────────────────────
     environment:
-      - SERVER_NAME=${SERVER_NAME:-}              # defaults to container hostname
+      - SERVER_NAME=${SERVER_NAME:-}
       - FIREBASE_CRED_PATH=firebase-key.json
       - FIRESTORE_COLLECTION=${FIRESTORE_COLLECTION:-studies}
-      - STUDY_ID=${STUDY_ID:-}                     # optional: only accept jobs for this study
+      - STUDY_ID=${STUDY_ID:-}
       - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-30}
 
     # ── Command ─────────────────────────────────────────────────────
-    # --render starts the render relay for remote Godot connections
-    # --funnel enables Tailscale funnel (requires Tailscale auth in container)
     command: >
       --name ${SERVER_NAME:-}
       --log-dir /app/log
