@@ -445,7 +445,8 @@ body {
 .box-top { color: var(--green); text-shadow: var(--glow-medium); }
 .box-bot { color: var(--green); text-shadow: var(--glow-soft); }
 .box-body {
-  color: var(--text-dim); padding: 0 var(--sp-sm) 0 calc(var(--sp-sm) + 1ch);
+  color: var(--text-dim); font-size: var(--fs-base);
+  padding: 0 var(--sp-sm) 0 calc(var(--sp-sm) + 1ch);
   line-height: var(--lh-loose); overflow: hidden; white-space: pre;
 }
 .box-body b { color: var(--text); }
