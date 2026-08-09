@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "prebuild": "npm run exportschema",
+    "exportschema": "bash export-schema.sh",
     "preview": "vite preview"
   },
   "dependencies": {

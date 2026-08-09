@@ -100,10 +100,16 @@ class AttackAction(AgentAction):
     }
 
     def can_execute(self, agent_state: dict) -> bool:
-        return agent_state.get("is_imposter", False)
+        # Check if this agent's type has attack available in any phase
+        return agent_state.get("agent_type", "") != ""
 
     def execute(self, agent, decision_value, engine) -> list[dict]:
-        target = engine._get_closest_target(agent)
+        # Target is chosen by name from the LLM's decision
+        target_name = decision_value
+        if not target_name or target_name in ("none", ""):
+            return []
+        target = next((p for p in engine._get_active_players()
+                      if p.name == target_name and p.agent_id != agent.agent_id), None)
         if not target:
             return []
         return [{"type": "attack", "target": target.name}]

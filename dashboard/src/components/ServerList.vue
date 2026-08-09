@@ -132,25 +132,19 @@ function _ageText(row) {
 
 <style scoped>
 .setup-bar {
-  padding: 4px 0 0 0;
-  border-top: 1px solid var(--border);
-  margin-top: 4px;
+  padding: var(--sp-xs) 0 0 0;
+  border-top: var(--border-panel);
+  margin-top: var(--sp-xs);
 }
-.tab {
-  font-size: 13px; color: var(--text-dim); cursor: pointer;
-}
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--green); text-shadow: 0 0 5px rgba(79,232,124,0.3); }
 .setup-body {
-  font-size: 15px;
-  padding: 4px 0 4px calc(6px + 1ch);
+  font-size: var(--fs-base);
+  padding: var(--sp-xs) 0 var(--sp-xs) calc(var(--sp-sm) + 1ch);
   line-height: 1.5;
 }
 .setup-pre {
-  color: var(--text);
-  white-space: pre-wrap;
-  padding: 2px 0;
-  font-size: 14px;
+  color: var(--text); white-space: pre-wrap;
+  padding: var(--sp-xxs) 0;
+  font-size: var(--fs-md);
 }
 .setup-body a { text-decoration: none; }
 .setup-body a:hover { text-decoration: underline; }

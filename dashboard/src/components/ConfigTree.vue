@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from "vue";
+import { ref, computed, onMounted } from "vue";
 import TerminalCard from "./TerminalCard.vue";
 import TypedSpan from "./TypedSpan.vue";
 import { TYPE } from "../composables/typeSettings.js";
@@ -9,7 +9,39 @@ const props = defineProps({
   title: { type: String, default: "config" },
 });
 
+const schemaMap = ref({});
 const N = 7;
+
+onMounted(async () => {
+  try {
+    const res = await fetch("/schema.json");
+    const schema = await res.json();
+    const map = {};
+    for (const [typeName, typeInfo] of Object.entries(schema)) {
+      for (const [className, classInfo] of Object.entries(typeInfo.classes || {})) {
+        const key = `${typeName}::${className}`;
+        const parts = [];
+        if (classInfo.description && classInfo.description !== className) {
+          parts.push(classInfo.description);
+        }
+        if (classInfo.source) parts.push(classInfo.source);
+        const paramNames = Object.keys(classInfo.params || {});
+        if (paramNames.length) {
+          parts.push("params: " + paramNames.join(", "));
+        }
+        map[key] = parts.join("\n");
+      }
+    }
+    schemaMap.value = map;
+  } catch (e) {
+    console.warn("ConfigTree: failed to load schema for tooltips", e);
+  }
+});
+
+function getTooltip(type, cls) {
+  if (!type || !cls) return "";
+  return schemaMap.value[`${type}::${cls}`] || "";
+}
 
 function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -129,6 +161,7 @@ function build(obj, preSegs, isLast, blockCls, gidx) {
           lines.push({
             cls: tc,
             html: `${cpre}${connHtml(jconn, blockCls)}<span class="${tc}">[${j}]</span> ${typeLabel(item, tc)}`,
+            tooltip: getTooltip(item.type, item.class),
             delay: 4,
           });
           const inner = {};
@@ -150,6 +183,7 @@ function build(obj, preSegs, isLast, blockCls, gidx) {
       lines.push({
         cls: tc,
         html: `${pre}${connHtml(conn, blockCls)}${keySpan} ${typeLabel(val, tc)}`,
+        tooltip: getTooltip(val.type, val.class),
         delay: 8,
       });
       const inner = {};
@@ -177,7 +211,7 @@ const lines = computed(() => {
     if (k === "type" || k === "class") continue;
     inner[k] = v;
   }
-  return [{ cls: rootCls, html: rootHtml, delay: 0 }, ...build(inner, [], true, rootCls, gidx)];
+  return [{ cls: rootCls, html: rootHtml, tooltip: getTooltip(props.config.type, props.config.class), delay: 0 }, ...build(inner, [], true, rootCls, gidx)];
 });
 </script>
 
@@ -187,6 +221,7 @@ const lines = computed(() => {
       v-for="(line, i) in lines"
       :key="'l' + i"
       :class="['tree-line', line.cls]"
+      :title="line.tooltip || ''"
       v-html="' ' + line.html"
     ></div>
   </TerminalCard>
@@ -198,7 +233,7 @@ const lines = computed(() => {
 <style scoped>
 .tree-line {
   white-space: pre;
-  line-height: 1.45;
-  font-size: 16px;
+  line-height: var(--lh-body);
+  font-size: var(--fs-base);
 }
 </style>

@@ -5,7 +5,6 @@ Both "type" (category) and "class" (concrete) are required to identify a compone
 """
 
 from .maps import SquareMap, CircleMap, FileMap
-from .map_data import FileMap as LegacyFileMap, SquareMap as LegacySquareMap  # legacy compat
 from .map_visualizer import MapVisualizer
 from .position import TilePosition
 from .agents import AgentType, AgentConfig
@@ -19,7 +18,7 @@ from .conditions import (
     And, Or, Not, Comparison, IsTruthy,
     AgentCountCheck, AgentTypeCheck,
 )
-from .context_manager import ContextManager, ContextChannel, ChannelType
+from .context_manager import ContextManager, ContextChannel, ChannelType, ChatContext
 
 COMPONENT_REGISTRY = {
     "Map": {
@@ -74,5 +73,8 @@ COMPONENT_REGISTRY = {
     },
     "ContextManager": {
         "ContextManager": ContextManager,
+    },
+    "ChatContext": {
+        "ChatContext": ChatContext,
     },
 }

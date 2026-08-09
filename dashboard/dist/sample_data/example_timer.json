@@ -1,0 +1,46 @@
+{
+  "name": "Timer-Based Elimination",
+  "description": "3 agents on a circular 10-radius map. No kills — crewmates win if they survive 120 seconds. Uses a timer-only win condition with And/Not logic.",
+  "type": "Experiment",
+  "class": "Experiment",
+  "id": "timer_game",
+  "references": [
+    {"type": "Map", "class": "CircleMap", "id": "arena", "radius": 10}
+  ],
+  "engine": {
+    "type": "Engine", "class": "EngineConfig",
+    "kill_distance": 0,
+    "visibility_radius": 4,
+    "witness_distance": 0,
+    "token_limit": 50000,
+    "win_conditions": [
+      {"type": "WinCondition", "class": "WinCondition", "winner": "Crewmate",
+       "condition": {"type": "Condition", "class": "And", "conditions": [
+         {"type": "Condition", "class": "Comparison", "op": ">",
+          "left": {"type": "Value", "class": "VariableRef", "path": "Crewmate.alive_count"},
+          "right": {"type": "Value", "class": "Literal", "value": 0}},
+         {"type": "Condition", "class": "Not", "condition":
+           {"type": "Condition", "class": "AgentCountCheck", "agent_type": "Imposter", "op": ">", "count": 0}}
+       ]}}
+    ],
+    "agents": {
+      "type": "AgentConfig", "class": "AgentConfig",
+      "types": [
+        {"type": "AgentType", "class": "AgentType", "id": "Crewmate", "displayName": "Crewmate",
+         "prompt": "You are a crewmate. Explore and chat. There is no impostor.", "count": 3,
+         "context_manager": {"type": "ContextManager", "class": "ContextManager",
+          "channels": [{"name": "system", "ctype": "constant"}, {"name": "chat", "ctype": "continuous"}]}}
+      ]
+    }
+  },
+  "free_roam": {
+    "type": "Phase", "class": "FreeRoamPhase",
+    "tick_interval": 2.5, "max_duration": 120.0,
+    "position_mode": {"type": "Position", "class": "TilePosition",
+      "map": {"type": "Ref", "class": "Ref", "ref": "arena"}},
+    "actions": [
+      {"type": "AgentAction", "class": "MoveAction", "range": 2, "available_to": ["Crewmate"]},
+      {"type": "AgentAction", "class": "ChatAction", "available_to": ["Crewmate"]}
+    ]
+  }
+}

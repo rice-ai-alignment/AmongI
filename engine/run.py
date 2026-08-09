@@ -107,12 +107,14 @@ async def main():
         exp = build_experiment(os.path.join(base, args.config))
 
     if exp:
-        config, free_roam_phase, voting_phase, win_conditions, map_data = experiment_to_runtime(exp)
+        config, free_roam_phase, voting_phase, win_conditions, position_mode, map_data = \
+            experiment_to_runtime(exp)
     else:
         config = GameConfig()
         free_roam_phase = None
         voting_phase = None
         win_conditions = []
+        position_mode = None
         map_data = SquareMap(16)
 
     # Override map with CLI flag
@@ -129,7 +131,8 @@ async def main():
     engine = GameEngine(config, map_data, event_store, render_client, [],
                         free_roam_phase=free_roam_phase,
                         voting_phase=voting_phase,
-                        win_conditions=win_conditions)
+                        win_conditions=win_conditions,
+                        position_mode=position_mode)
     if exp:
         engine._agent_types = exp.engine.agents.types
         engine._experiment_config = exp.to_json()

@@ -12,20 +12,14 @@ from components.maps import SquareMap
 
 def experiment_to_runtime(exp):
     """Convert an Experiment tree into (GameConfig, free_roam, voting,
-    win_conditions, map_data).
+    win_conditions, position_mode, map_data).
 
-    Returns a tuple of (config, free_roam_phase, voting_phase, win_conditions, map_data).
+    The map comes from the position mode component (e.g. TilePosition.map).
+    Returns a tuple of (config, free_roam_phase, voting_phase, win_conditions, position_mode, map_data).
     """
     eng = exp.engine
     config = GameConfig()
     config.player_count = eng.agents.total
-    # Determine imposter count from phase actions: count agents of types
-    # that have AttackAction available in free_roam phase.
-    phases = [exp.free_roam, exp.voting]
-    config.imposter_count = sum(
-        t.count for t in eng.agents.types
-        if t.has_action("attack", phases)
-    )
     config.kill_distance = eng.kill_distance
     config.visibility_radius = eng.visibility_radius
     config.witness_distance = eng.witness_distance
@@ -39,9 +33,10 @@ def experiment_to_runtime(exp):
     voting_phase = exp.voting
     win_conditions = eng.win_conditions or []
 
-    # The config map IS the runtime map — use it directly
-    map_data = exp.free_roam.position_mode.map
+    # Position mode owns the map — extract from the free-roam phase config
+    position_mode = exp.free_roam.position_mode
+    map_data = position_mode.map if position_mode else None
     if map_data is None:
         map_data = SquareMap(16)
 
-    return (config, free_roam_phase, voting_phase, win_conditions, map_data)
+    return (config, free_roam_phase, voting_phase, win_conditions, position_mode, map_data)

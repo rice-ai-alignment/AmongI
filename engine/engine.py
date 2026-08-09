@@ -37,7 +37,7 @@ from agent import Agent
 from position import Tile
 from components.maps import SquareMap, CircleMap, FileMap, _MapBase as BaseMap
 from components.map_visualizer import MapVisualizer
-from components.context_manager import ContextManager, ChannelType
+from components.context_manager import ContextManager, ChatContext
 
 from render_client import RenderClient
 from event_store import EventStore
@@ -59,7 +59,6 @@ class GameConfig:
     game_max_length: float = 600.0
     vote_timeout: float = 30.0
     min_vote_time: float = 15.0
-    imposter_count: int = 1
     visibility_radius: int = 5
     agent_tick_interval: float = 3.0
     near_timeout_threshold: float = 5.0
@@ -108,7 +107,10 @@ class PlayerState:
     name: str
     tile: Tile
     agent: Agent
-    is_imposter: bool = False
+    @property
+    def is_imposter(self) -> bool:
+        """Backward-compat: True if this player has an attack-capable role."""
+        return self.agent_type_name.lower() in ("imposter", "impostor")
     is_active: bool = False
     color_index: int = 0
     index: int = 0
@@ -126,14 +128,7 @@ You are a 2D grid explorer. Your surroundings are represented by an ASCII grid w
  . is Walkable ground, and # is a Wall or obstacle.
 """
 
-CREWMATE_INSTRUCTIONS = """You are a crewmate. Stay alive, observe other bots, and chat naturally. Avoid attacking unless necessary.
-"""
-
-IMPOSTOR_INSTRUCTIONS = """You are an impostor. Your goal is to eliminate crewmates. When another bot is nearby
-(within a few tiles), set attack to "attack" in your response to kill them.
-Attack only when someone is close — the kill only works on the nearest bot within range.
-Blend in by chatting normally and avoid drawing suspicion.
-"""
+# Role instructions now come from AgentType.prompt in the experiment config.
 
 VOTE_PROMPT = """VOTING PHASE: Discuss and then cast your vote.
 You cannot move or attack during voting.
@@ -162,9 +157,11 @@ class GameEngine:
     def __init__(self, config: GameConfig, map_data: BaseMap,
                  event_store: EventStore, render_client: Optional[RenderClient],
                  personas: list[str],
-                 free_roam_phase=None, voting_phase=None, win_conditions=None):
+                 free_roam_phase=None, voting_phase=None, win_conditions=None,
+                 position_mode=None):
         self.cfg = config
         self.map = map_data
+        self.position_mode = position_mode  # e.g. TilePosition — owns the map
         self.visualizer = MapVisualizer(map_data)
         self.events = event_store
         self.render = render_client
@@ -189,7 +186,7 @@ class GameEngine:
         self.vote_choices: dict[int, str] = {}
         self._last_vote_log_second: int = -1
 
-        self.recent_global_chats: list[str] = []
+        self.chat_context = ChatContext()
         self.recent_events: list[dict] = []
         self._clear_memory_flags: dict[int, bool] = {}
 
@@ -256,12 +253,6 @@ class GameEngine:
     def _get_active_players(self) -> list[PlayerState]:
         return [p for p in self.players.values() if p.is_active]
 
-    def _get_alive_crewmates(self) -> int:
-        return sum(1 for p in self._get_active_players() if not p.is_imposter)
-
-    def _get_alive_imposters(self) -> int:
-        return sum(1 for p in self._get_active_players() if p.is_imposter)
-
     @property
     def game_index(self) -> int:
         return self._game_index
@@ -301,7 +292,10 @@ class GameEngine:
         if player.first_time:
             intro += "This is your first turn — introduce yourself!\n"
             player.first_time = False
-        intro += IMPOSTOR_INSTRUCTIONS if player.is_imposter else CREWMATE_INSTRUCTIONS
+        # Use agent type prompt from config if available
+        at = next((t for t in self._agent_types if t.id == player.agent_type_name), None)
+        if at and at.prompt:
+            intro += at.prompt
         return intro
 
     def build_recent_context(self, player: PlayerState, world_view: str,
@@ -334,8 +328,17 @@ class GameEngine:
             "chat": {"type": "string", "description": "Chat message."},
             "reason": {"type": "string", "description": "Logic behind the move."},
         }
-        if player.is_imposter:
-            props["attack"] = {"type": "string", "description": "Set to 'attack' to kill nearest bot within range."}
+        # Attack: list valid target names within range so the agent can choose.
+        phase = self.voting_phase if is_voting else self.free_roam_phase
+        if phase and phase.has_action_for(player.agent_type_name, "attack"):
+            targets = self._get_attackable_targets(player)
+            if targets:
+                target_names = [t.name for t in targets]
+                props["attack"] = {
+                    "type": "string",
+                    "enum": [""] + target_names,
+                    "description": f"Target to attack. Options: {', '.join(target_names)}. Leave empty to not attack.",
+                }
         return {
             "type": "object", "additionalProperties": False,
             "properties": props,
@@ -351,95 +354,6 @@ class GameEngine:
             "delta_x": dx, "delta_y": -dy,
             "name": other.name,
         }
-
-    # ── Context builder ───────────────────────────────────────────────
-
-    def build_context(self, player: PlayerState) -> dict:
-        base = {
-            "id": player.agent_id,
-            "pos": {"x": player.tile.x, "y": player.tile.y},
-            "name": player.name,
-            "is_imposter": player.is_imposter,
-            "phase_id": self._phase_id,
-        }
-
-        if not player.is_active:
-            return {**base, "is_idle": True, "intro": "", "recent_context": "",
-                    "bots": [], "chat_logs": [], "events": [],
-                    "world_view": "", "action_schema": {"type": "object",
-                        "additionalProperties": False, "properties": {}, "required": []}}
-
-        radius = self.cfg.visibility_radius
-        other_bots = []
-        for other in self._get_active_players():
-            if other.agent_id == player.agent_id:
-                continue
-            rel = self.get_relative_player_data(player, other)
-            if abs(rel["delta_x"]) <= radius and abs(rel["delta_y"]) <= radius:
-                other_bots.append(rel)
-
-        if len(self.recent_events) > 50:
-            self.recent_events = self.recent_events[-50:]
-        events_snapshot = list(self.recent_events)
-
-        # ── Voting phase ──
-        if self.phase == Phase.VOTING:
-            if self._state_timer < self.cfg.near_timeout_threshold:
-                return {**base, "is_idle": False,
-                        "intro": "Voting almost over. Wait for results.",
-                        "recent_context": "",
-                        "bots": [], "world_view": "", "chat_logs": [],
-                        "events": events_snapshot,
-                        "action_schema": {"type": "object",
-                            "additionalProperties": False, "properties": {}, "required": []},
-                        "clear_memory": False}
-
-            player_names = [p.name for p in self._get_active_players()]
-            recent = VOTE_PROMPT + "\n"
-            if events_snapshot:
-                recent += "Recent events:\n"
-                for ev in events_snapshot:
-                    if ev.get("type") == "kill":
-                        victim = ev.get("victim", "?")
-                        killer = ev.get("killer", "")
-                        if player.name in ev.get("witnesses", []):
-                            recent += f"- YOU WITNESSED: {killer} killed {victim}!\n"
-                        else:
-                            recent += f"- {victim} was found dead!\n"
-                    elif ev.get("type") == "eject":
-                        recent += f"- {ev.get('victim', '?')} was ejected (was imposter: {ev.get('was_imposter', False)})\n"
-            recent += f"Players: {', '.join(player_names)}\n"
-            recent += "Recent global chats:\n"
-            for c in self.recent_global_chats[-50:]:
-                recent += f"- {c}\n"
-            recent += "Current votes:\n"
-            for voter_id, target in self.vote_choices.items():
-                vp = self.players.get(voter_id)
-                recent += f"{vp.name if vp else 'Unknown'} -> {target}\n"
-
-            return {**base, "is_idle": False,
-                    "intro": "", "recent_context": recent,
-                    "bots": other_bots, "world_view": "",
-                    "chat_logs": list(self.recent_global_chats[-50:]),
-                    "events": events_snapshot,
-                    "action_schema": self.get_action_schema(player, True),
-                    "clear_memory": False}
-
-        # ── Playing phase ──
-        world_view = self.map.get_ascii_world_view(player.tile, radius)
-        intro = self.build_intro(player)
-        recent = self.build_recent_context(player, world_view, other_bots)
-        action_schema = self.get_action_schema(player, False)
-
-        clear_mem = self._clear_memory_flags.get(player.agent_id, False)
-        if clear_mem:
-            self._clear_memory_flags[player.agent_id] = False
-
-        return {**base, "is_idle": False,
-                "intro": intro, "recent_context": recent,
-                "bots": other_bots, "world_view": world_view,
-                "chat_logs": [], "events": events_snapshot,
-                "action_schema": action_schema, "clear_memory": clear_mem}
 
     # ── Agent calling ─────────────────────────────────────────────────
 
@@ -492,7 +406,7 @@ class GameEngine:
                 "prompt": prompt,
                 "action_schema": action_schema,
                 "phase_id": phase,
-                "is_imposter": p.is_imposter,
+                "agent_type": p.agent_type_name,
                 "name": p.name,
             }
             decision = await asyncio.to_thread(p.agent.think, ctx_dict)
@@ -548,14 +462,18 @@ class GameEngine:
                 })
 
         # ── Attack ──
-        if attack and attack not in ("none", "") and player.is_imposter:
-            target = self._get_closest_target(player)
-            if target:
+        can_attack = self.free_roam_phase and \
+            self.free_roam_phase.has_action_for(player.agent_type_name, "attack")
+        if attack and attack not in ("none", "") and can_attack:
+            # Look up target by name from the LLM's choice
+            target = next((p for p in self._get_active_players()
+                          if p.name == attack and p.agent_id != player.agent_id), None)
+            if target and self.map.distance(player.tile, target.tile) <= self.cfg.kill_distance:
                 actions.append({"type": "attack", "target": target.name})
                 await self._kill_player(target, player)
 
         # ── Chat ──
-        chat_action = self._route_chat(player, chat_msg)
+        chat_action = self.chat_context.route(self, player, chat_msg)
         if chat_action:
             actions.append(chat_action)
 
@@ -585,7 +503,7 @@ class GameEngine:
         }]
 
         chat_msg = str(decision.get("chat", "")).strip()
-        chat_action = self._route_chat(player, chat_msg, broadcast=True)
+        chat_action = self.chat_context.route(self, player, chat_msg, broadcast=True)
         if chat_action:
             actions.append(chat_action)
 
@@ -598,41 +516,18 @@ class GameEngine:
                                 "agent": player.name,
                                 "actions": actions})
 
-    def _route_chat(self, player: PlayerState, message: str,
-                    broadcast: bool = False) -> Optional[dict]:
-        """Route a chat message to nearby agents by appending to their
-        persistent message history. Returns the action dict for the combined
-        per-agent action event (does NOT emit)."""
-        if not message:
-            return None
-        chat_line = f"{player.name}: {message}"
-        self.recent_global_chats.append(chat_line)
-        action = {
-            "type": "say",
-            "message": message,
-            "broadcast": broadcast,
-            "pos": {"x": player.tile.x, "y": player.tile.y},
-        }
-        for other in self._get_active_players():
-            if other.agent_id == player.agent_id:
-                continue
-            if self.map.distance(player.tile, other.tile) <= self.cfg.chat_distance or broadcast:
-                dx = player.tile.x - other.tile.x
-                dy = other.tile.y - player.tile.y  # Y-up for display
-                other.ctx.add("chat", f"{chat_line}  (dx={dx:+d}, dy={dy:+d})")
-        return action
-
     # ── Kill logic ────────────────────────────────────────────────────
 
-    def _get_closest_target(self, killer: PlayerState) -> Optional[PlayerState]:
-        closest, closest_dist = None, float("inf")
+    def _get_attackable_targets(self, attacker: PlayerState) -> list[PlayerState]:
+        """Return all active players within kill_distance (excluding self)."""
+        targets = []
         for other in self._get_active_players():
-            if other.agent_id == killer.agent_id:
+            if other.agent_id == attacker.agent_id:
                 continue
-            d = self.map.distance(killer.tile, other.tile)
-            if d < closest_dist and d <= self.cfg.kill_distance:
-                closest, closest_dist = other, d
-        return closest
+            d = self.map.distance(attacker.tile, other.tile)
+            if d <= self.cfg.kill_distance:
+                targets.append(other)
+        return targets
 
     async def _kill_player(self, victim: PlayerState, killer: PlayerState):
         victim.is_active = False
@@ -689,7 +584,7 @@ class GameEngine:
         # Push voting start into all agents' continuous event channel.
         for p in active:
             p.ctx.add("events",
-                f"Emergency meeting! Vote for who you think is the impostor. "
+                f"Emergency meeting! Discuss and cast your votes. "
                 f"You have {int(self.cfg.vote_timeout)} seconds.")
 
     async def _finalize_voting(self):
@@ -725,16 +620,16 @@ class GameEngine:
             self._game_ejections += 1
             self.recent_events.append(
                 {"type": "eject", "agent_id": victim.agent_id,
-                 "victim": victim.name, "was_imposter": victim.is_imposter})
+                 "victim": victim.name, "role": victim.agent_type_name})
             await self._emit("system", "system_message",
                              {"message": f"{victim.name} was ejected!"})
             # Push ejection into all players' continuous event channel.
-            imposter_note = " (was the impostor!)" if victim.is_imposter else " (was a crewmate)"
+            role_note = f" (was {victim.agent_type_name})"
             for p in self.players.values():
-                p.ctx.add("events", f"{victim.name} was ejected!{imposter_note}")
+                p.ctx.add("events", f"{victim.name} was ejected!{role_note}")
             await self._emit("voting", "result", {
                 "agent_id": victim.agent_id,
-                "ejected": victim.name, "was_imposter": victim.is_imposter,
+                "ejected": victim.name, "role": victim.agent_type_name,
                 "vote_tallies": tally_strs})
             if self.check_win_condition()["game_over"]:
                 await self._end_game(self.check_win_condition()["winner"])
@@ -784,8 +679,6 @@ class GameEngine:
         self._trace("game_event", {"type": "game_start", "game_id": gid})
 
         active_ids = list(self.players.keys())
-        imposter_ids = set(random.sample(
-            active_ids, min(self.cfg.imposter_count, len(active_ids))))
 
         # Build agent groups from configured types
         self._groups.clear()
@@ -794,39 +687,31 @@ class GameEngine:
         for at in self._agent_types:
             self._groups[at.id] = AgentGroup(name=at.id, _engine=self)
 
-        # Determine agent type capabilities from phase actions
-        phases = [self.free_roam_phase, self.voting_phase]
-        imp_type_id = "Imposter"
-        crew_type_id = "Crewmate"
+        # Assign players to agent types based on configured counts
+        type_assignments: list[str] = []
         for at in self._agent_types:
-            if at.has_action("attack", phases):
-                imp_type_id = at.id
-            else:
-                crew_type_id = at.id
+            type_assignments.extend([at.id] * at.count)
+        if len(type_assignments) < len(active_ids):
+            # Fallback: pad with first agent type
+            fallback = self._agent_types[0].id
+            type_assignments.extend([fallback] * (len(active_ids) - len(type_assignments)))
+        random.shuffle(type_assignments)
 
         player_list = []
-        for pid, p in self.players.items():
-            p.is_imposter = (pid in imposter_ids)
-            p.agent_type_name = imp_type_id if p.is_imposter else crew_type_id
+        for pi, pid in enumerate(active_ids):
+            p = self.players[pid]
+            p.agent_type_name = type_assignments[pi]
             p.is_active = True
             p.first_time = True
             p.tile = self.map.random_walkable_tile()
-            # Initialise context manager — use AgentType config if available
+            # Initialise context manager — use AgentType config
             at = next((t for t in self._agent_types if t.id == p.agent_type_name), None)
-            if at and at.context_manager:
-                # Create from config template
-                p.ctx = ContextManager(p.name, p.is_imposter)
-                if at.context_manager.base_prompt:
-                    p.ctx.set_constant("system", at.context_manager.base_prompt)
-                else:
-                    p.ctx.set_constant("system", BASE_PROMPT)
-                p.ctx.set_constant("role",
-                    IMPOSTOR_INSTRUCTIONS if p.is_imposter else CREWMATE_INSTRUCTIONS)
-            else:
-                p.ctx = ContextManager(p.name, p.is_imposter)
-                p.ctx.set_constant("system", BASE_PROMPT)
-                p.ctx.set_constant("role",
-                    IMPOSTOR_INSTRUCTIONS if p.is_imposter else CREWMATE_INSTRUCTIONS)
+            p.ctx = ContextManager(p.name)
+            p.ctx.set_constant("system", BASE_PROMPT)
+            if at and at.prompt:
+                p.ctx.set_constant("role", at.prompt)
+            if at and at.context_manager and at.context_manager.base_prompt:
+                p.ctx.set_constant("system", at.context_manager.base_prompt)
             p.agent.set_intro(BASE_PROMPT)
             p.agent.tokens.reset()
             player_list.append({
@@ -837,15 +722,17 @@ class GameEngine:
         await self._emit("system", "phase_change",
                          {"phase": "playing", "countdown_sec": self.cfg.game_max_length})
 
-        imp_names = [self.players[pid].name for pid in imposter_ids]
-        print(f"Imposters: {imp_names}")
+        # Print role assignments
+        by_type: dict[str, list[str]] = {}
+        for p in self.players.values():
+            by_type.setdefault(p.agent_type_name, []).append(p.name)
+        for tname, names in by_type.items():
+            print(f"[{tname}]: {names}")
 
     async def _end_game(self, reason: str):
-        msgs = {"crewmates": "Game Over! Crewmates win!",
-                "imposters": "Game Over! Imposters win!",
-                "timeout": "Game Over! Time limit reached.",
+        msgs = {"timeout": "Game Over! Time limit reached.",
                 "token_limit": "Game Over! Token budget exceeded."}
-        msg = msgs.get(reason, f"Game Over! {reason}")
+        msg = msgs.get(reason, f"Game Over! {reason} win!")
         print(msg)
         self._trace("game_event", {"type": "game_end", "winner": reason})
         await self._emit("system", "system_message", {"message": msg})
@@ -859,7 +746,7 @@ class GameEngine:
             "duration_sec": time.time() - getattr(self, "_game_started_at_ts", time.time()),
             "winner": reason, "kills": self._game_kills,
             "ejections": self._game_ejections,
-            "players": [{"name": p.name, "imposter": p.is_imposter,
+            "players": [{"name": p.name, "role": p.agent_type_name,
                          "alive": p.is_active,
                          "kills": self._player_kills.get(p.agent_id, 0),
                          "color": self.cfg.agent_colors[p.color_index % len(self.cfg.agent_colors)]}
@@ -970,7 +857,7 @@ class GameEngine:
 
     def _build_summary(self) -> dict:
         """Build a summary dict from accumulated recaps."""
-        by_winner = {"crewmates": 0, "imposters": 0, "timeout": 0, "token_limit": 0}
+        by_winner: dict[str, int] = {}
         total_kills = 0
         total_ejections = 0
         for g in self._recaps:
@@ -1038,7 +925,7 @@ class GameEngine:
     def _seed_players(self):
         n = self.cfg.player_count
         persona_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "..", "agent", "personas")
+                                   "personas")
         personas = load_personas(persona_dir, n)
         for i in range(n):
             name = self.cfg.agent_names[i % len(self.cfg.agent_names)]

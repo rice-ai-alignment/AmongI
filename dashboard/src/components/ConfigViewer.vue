@@ -163,7 +163,7 @@ function esc(s) {
         </div>
       </TerminalCard>
 
-      <TerminalCard title="examples" :min-width="26" :collapsible="false" style="margin-top:8px">
+      <TerminalCard title="examples" :min-width="26" :collapsible="false" style="margin-top:var(--sp-md)">
         <div class="cv-type-list">
           <div
             v-for="ex in examples"
@@ -185,6 +185,9 @@ function esc(s) {
         <StaggerBlock>
           <div v-for="(cinfo, cname) in selectedTypeInfo.classes" :key="cname">
             <TerminalCard :title="selectedType + ' :: ' + cname" :min-width="50" :collapsible="true">
+              <div v-if="cinfo.source" class="cv-source dim">
+                <TypedSpan :text="' ' + esc(cinfo.source)" :speed="TYPE.fast" />
+              </div>
               <div v-for="line in buildClassLines({ ...cinfo, _key: cname })" :key="line.delay + '-' + line.html.slice(0,20)">
                 <TypedSpan :text="' ' + line.html" :speed="TYPE.fast" :delay="line.delay" />
               </div>
@@ -199,7 +202,7 @@ function esc(s) {
           <div><TypedSpan :text="' <span class=&quot;dim&quot;>' + esc(selectedExample.description) + '</span>'" :speed="TYPE.fast" /></div>
           <div><TypedSpan :text="' <span class=&quot;dim&quot;>file: ' + esc(selectedExample.filename) + '</span>'" :speed="TYPE.fast" :delay="100" /></div>
         </TerminalCard>
-        <TerminalCard title="raw config" :min-width="50" :collapsible="true" style="margin-top:4px">
+        <TerminalCard title="raw config" :min-width="50" :collapsible="true" style="margin-top:var(--sp-xs)">
           <pre class="cv-json"><code>{{ exampleJson }}</code></pre>
         </TerminalCard>
       </div>
@@ -221,32 +224,33 @@ function esc(s) {
 .cv-sidebar {
   width: 28ch; flex-shrink: 0; overflow-y: auto;
 }
-.cv-sidebar::-webkit-scrollbar { width: 3px; }
-.cv-sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.cv-sidebar::-webkit-scrollbar       { width: var(--scrollbar-w); }
+.cv-sidebar::-webkit-scrollbar-thumb  { background: var(--border); border-radius: var(--radius-sm); }
 .cv-main {
   flex: 1; overflow-y: auto; min-width: 0;
 }
-.cv-main::-webkit-scrollbar { width: 3px; }
-.cv-main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.cv-main::-webkit-scrollbar       { width: var(--scrollbar-w); }
+.cv-main::-webkit-scrollbar-thumb  { background: var(--border); border-radius: var(--radius-sm); }
 
 .cv-type-list { display: flex; flex-direction: column; }
 .cv-type-item {
   cursor: pointer; padding: 1px 0; color: var(--text-dim);
-  font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: var(--fs-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: all 0.12s ease; display: flex; justify-content: space-between; align-items: center;
 }
-.cv-type-item:hover { color: var(--text); padding-left: 2px; }
+.cv-type-item:hover { color: var(--text); padding-left: var(--sp-xxs); }
 .cv-type-item.active { color: var(--green); text-shadow: 0 0 5px rgba(79,232,124,0.3); }
-.cv-count { font-size: 14px; }
+.cv-count { font-size: var(--fs-md); }
 
 .cv-json {
-  font-size: 16px; line-height: 1.4; white-space: pre; overflow-x: auto;
+  font-size: var(--fs-base); line-height: 1.4; white-space: pre; overflow-x: auto;
   color: var(--text-dim); max-height: 70vh; overflow-y: auto;
 }
-.cv-json::-webkit-scrollbar { width: 3px; height: 3px; }
-.cv-json::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.cv-json::-webkit-scrollbar       { width: var(--scrollbar-w); height: var(--scrollbar-w); }
+.cv-json::-webkit-scrollbar-thumb  { background: var(--border); border-radius: var(--radius-sm); }
 .cv-json code { font-family: var(--font-mono); }
 
-.cv-empty { padding-top: 4px; }
-.box-label { font-size: 18px; color: var(--green); text-shadow: 0 0 6px rgba(79,232,124,0.4); }
+.cv-empty { padding-top: var(--sp-xs); }
+.cv-source { font-size: var(--fs-sm); padding-bottom: var(--sp-xxs); }
+.box-label { font-size: var(--fs-ui); color: var(--green); text-shadow: var(--glow-medium); }
 </style>

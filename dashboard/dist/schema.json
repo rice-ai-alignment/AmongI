@@ -1,0 +1,674 @@
+{
+  "Map": {
+    "description": "Map components",
+    "classes": {
+      "SquareMap": {
+        "description": "A square arena \u2014 open interior with a 1-tile border wall.",
+        "params": {
+          "size": {
+            "type": "int",
+            "default": "16",
+            "description": "Side length of the square arena"
+          }
+        },
+        "source": "components/maps.py",
+        "exposes": {
+          "variables": {
+            "size": "int \u2014 side length of the square arena"
+          },
+          "functions": {
+            "is_walkable": {
+              "args": [
+                "x",
+                "y"
+              ],
+              "returns": "bool",
+              "desc": "Check if a tile is walkable"
+            },
+            "distance": {
+              "args": [
+                "a",
+                "b"
+              ],
+              "returns": "float",
+              "desc": "Euclidean distance between two tiles"
+            },
+            "random_tile": {
+              "args": [],
+              "returns": "Tile",
+              "desc": "Return a random walkable tile"
+            }
+          }
+        }
+      },
+      "CircleMap": {
+        "description": "A circular arena \u2014 tiles within radius of centre are walkable.",
+        "params": {
+          "diameter": {
+            "type": "int",
+            "default": "16",
+            "description": "Diameter of the circular arena"
+          }
+        },
+        "source": "components/maps.py",
+        "exposes": {
+          "variables": {
+            "diameter": "int \u2014 diameter of the circular arena"
+          },
+          "functions": {
+            "is_walkable": {
+              "args": [
+                "x",
+                "y"
+              ],
+              "returns": "bool",
+              "desc": "Check if a tile is walkable"
+            },
+            "distance": {
+              "args": [
+                "a",
+                "b"
+              ],
+              "returns": "float",
+              "desc": "Euclidean distance between two tiles"
+            }
+          }
+        }
+      },
+      "FileMap": {
+        "description": "Load walkable tiles from a JSON file.",
+        "params": {
+          "path": {
+            "type": "str",
+            "default": "'map_data.json'",
+            "description": "Path to JSON map file"
+          }
+        },
+        "source": "components/maps.py",
+        "exposes": {
+          "variables": {
+            "path": "str \u2014 path to the map JSON file"
+          },
+          "functions": {
+            "is_walkable": {
+              "args": [
+                "x",
+                "y"
+              ],
+              "returns": "bool",
+              "desc": "Check if a tile is walkable"
+            },
+            "distance": {
+              "args": [
+                "a",
+                "b"
+              ],
+              "returns": "float",
+              "desc": "Euclidean distance between two tiles"
+            }
+          }
+        }
+      }
+    }
+  },
+  "Position": {
+    "description": "Position components",
+    "classes": {
+      "TilePosition": {
+        "description": "Discrete 2D tile-based movement.",
+        "params": {
+          "map": {
+            "type": "component",
+            "default": null,
+            "description": "Map component defining walkable tiles"
+          }
+        },
+        "source": "components/position.py",
+        "exposes": {
+          "functions": {
+            "distance_between": {
+              "args": [
+                "id_a",
+                "id_b"
+              ],
+              "returns": "float",
+              "desc": "Euclidean distance between two entities by ID"
+            },
+            "get_position": {
+              "args": [
+                "id"
+              ],
+              "returns": "Tile",
+              "desc": "Get the tile position of an entity by ID"
+            }
+          }
+        }
+      }
+    }
+  },
+  "AgentAction": {
+    "description": "AgentAction components",
+    "classes": {
+      "MoveAction": {
+        "description": "Move the agent on the tile grid.",
+        "params": {
+          "available_to": {
+            "type": "list",
+            "default": "[]",
+            "description": "Agent type IDs allowed to use this action (empty = all)"
+          },
+          "conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Conditions that must be true for this action to be available"
+          },
+          "range": {
+            "type": "int",
+            "default": "2",
+            "description": "Max tiles per move in x or y"
+          }
+        },
+        "source": "components/actions.py"
+      },
+      "ChatAction": {
+        "description": "Send a chat message to nearby agents.",
+        "params": {
+          "available_to": {
+            "type": "list",
+            "default": "[]",
+            "description": "Agent type IDs allowed to use this action (empty = all)"
+          },
+          "conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Conditions that must be true for this action to be available"
+          }
+        },
+        "source": "components/actions.py"
+      },
+      "AttackAction": {
+        "description": "Attack the nearest agent within range.",
+        "params": {
+          "available_to": {
+            "type": "list",
+            "default": "[]",
+            "description": "Agent type IDs allowed to use this action (empty = all)"
+          },
+          "conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Conditions that must be true for this action to be available"
+          },
+          "range": {
+            "type": "int",
+            "default": "3",
+            "description": "Max tiles to reach a target"
+          }
+        },
+        "source": "components/actions.py"
+      },
+      "VoteAction": {
+        "description": "Cast a vote during the voting phase.",
+        "params": {
+          "available_to": {
+            "type": "list",
+            "default": "[]",
+            "description": "Agent type IDs allowed to use this action (empty = all)"
+          },
+          "conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Conditions that must be true for this action to be available"
+          }
+        },
+        "source": "components/actions.py"
+      }
+    }
+  },
+  "AgentType": {
+    "description": "AgentType components",
+    "classes": {
+      "AgentType": {
+        "description": "One agent type \u2014 its id, display name, prompt, and spawn count.\n\n    ``id`` is the machine-readable key used in references\n    (``available_to``, ``VariableRef`` paths, ``alive_count``, etc.).\n    ``displayName`` is the human-readable label shown in the UI.\n\n    Actions are defined in phases (FreeRoamPhase.actions, VotingPhase.actions)\n    with ``available_to`` lists \u2014 not duplicated here.",
+        "params": {
+          "id": {
+            "type": "str",
+            "default": "''",
+            "description": "Machine-readable identifier (used in references)"
+          },
+          "displayName": {
+            "type": "str",
+            "default": "''",
+            "description": "Human-readable display name"
+          },
+          "prompt": {
+            "type": "str",
+            "default": "''",
+            "description": "System prompt for this agent type"
+          },
+          "count": {
+            "type": "int",
+            "default": "1",
+            "description": "How many agents of this type to spawn"
+          },
+          "context_manager": {
+            "type": "component",
+            "default": null,
+            "description": "Optional ContextManager config for this type"
+          }
+        },
+        "source": "components/agents.py",
+        "exposes": {
+          "variables": {
+            "id": "str \u2014 machine-readable identifier for this agent type",
+            "displayName": "str \u2014 human-readable label",
+            "count": "int \u2014 number of agents of this type"
+          },
+          "functions": {}
+        }
+      }
+    }
+  },
+  "AgentConfig": {
+    "description": "AgentConfig components",
+    "classes": {
+      "AgentConfig": {
+        "description": "Collection of agent types for an experiment.",
+        "params": {
+          "types": {
+            "type": "list",
+            "default": null,
+            "description": "List of AgentType definitions"
+          }
+        },
+        "source": "components/agents.py"
+      }
+    }
+  },
+  "Phase": {
+    "description": "Phase components",
+    "classes": {
+      "FreeRoamPhase": {
+        "description": "Exploration \u2014 agents move, chat, and imposters can kill.",
+        "params": {
+          "actions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Actions available during this phase"
+          },
+          "position_mode": {
+            "type": "component",
+            "default": null,
+            "description": "Position system for movement"
+          },
+          "tick_interval": {
+            "type": "float",
+            "default": "3.0",
+            "description": "Seconds between agent ticks"
+          },
+          "max_duration": {
+            "type": "float",
+            "default": "600.0",
+            "description": "Maximum phase duration in seconds"
+          }
+        },
+        "source": "components/phases.py"
+      },
+      "VotingPhase": {
+        "description": "Emergency meeting \u2014 agents discuss and vote.",
+        "params": {
+          "actions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Actions available during this phase"
+          },
+          "timeout": {
+            "type": "float",
+            "default": "30.0",
+            "description": "Seconds until voting ends"
+          },
+          "min_time": {
+            "type": "float",
+            "default": "15.0",
+            "description": "Minimum seconds before finalising"
+          }
+        },
+        "source": "components/phases.py"
+      }
+    }
+  },
+  "WinCondition": {
+    "description": "WinCondition components",
+    "classes": {
+      "WinCondition": {
+        "description": "Declares a winner and the condition that triggers that outcome.\n\n    ``winner`` is the name of the agent group that wins (e.g. ``\"Crewmate\"``,\n    ``\"Imposter\"``).\n\n    ``condition`` is an optional Condition.  If *None*, this win condition\n    never fires on its own (useful when the game ends only by timer).",
+        "params": {
+          "winner": {
+            "type": "str",
+            "default": "''",
+            "description": "Agent group that wins (Crewmate / Imposter)"
+          },
+          "condition": {
+            "type": "component",
+            "default": null,
+            "description": "Condition that triggers this outcome (or null for timer-only)"
+          }
+        },
+        "source": "components/win_conditions.py"
+      }
+    }
+  },
+  "Engine": {
+    "description": "Engine components",
+    "classes": {
+      "EngineConfig": {
+        "description": "Engine-level parameters.",
+        "params": {
+          "agents": {
+            "type": "component",
+            "default": null,
+            "description": "AgentConfig defining agent types"
+          },
+          "win_conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "List of WinCondition rules for game end"
+          },
+          "kill_distance": {
+            "type": "int",
+            "default": "3",
+            "description": "Max tiles for an attack"
+          },
+          "visibility_radius": {
+            "type": "int",
+            "default": "5",
+            "description": "Radius for agent world view"
+          },
+          "witness_distance": {
+            "type": "int",
+            "default": "5",
+            "description": "Max tiles to witness an attack"
+          },
+          "token_limit": {
+            "type": "int",
+            "default": "100000",
+            "description": "Total token budget across all agents"
+          }
+        },
+        "source": "components/engine.py",
+        "exposes": {
+          "variables": {
+            "kill_distance": "int \u2014 max tiles for an attack",
+            "visibility_radius": "int \u2014 radius for agent world view",
+            "witness_distance": "int \u2014 max tiles to witness an attack",
+            "game_kills": "int \u2014 total eliminations this game",
+            "game_index": "int \u2014 current game number (1-based)",
+            "token_limit": "int \u2014 total token budget across all agents",
+            "phase": "str \u2014 current game phase name"
+          },
+          "functions": {
+            "alive_count": {
+              "args": [
+                "agent_type"
+              ],
+              "returns": "int",
+              "desc": "Number of alive agents of the given type"
+            },
+            "nearest_target": {
+              "args": [],
+              "returns": "agent | null",
+              "desc": "Closest attackable agent to the current agent"
+            },
+            "distance_between": {
+              "args": [
+                "a",
+                "b"
+              ],
+              "returns": "float",
+              "desc": "Distance between two agents"
+            }
+          }
+        }
+      }
+    }
+  },
+  "Experiment": {
+    "description": "Experiment components",
+    "classes": {
+      "Experiment": {
+        "description": "Top-level experiment \u2014 composes engine, phases, map, and agents.",
+        "params": {
+          "engine": {
+            "type": "EngineConfig",
+            "default": null,
+            "description": "Engine parameters"
+          },
+          "free_roam": {
+            "type": "component",
+            "default": null,
+            "description": "Free-roam phase config"
+          },
+          "voting": {
+            "type": "component",
+            "default": null,
+            "description": "Voting phase config"
+          }
+        },
+        "source": "components/engine.py"
+      }
+    }
+  },
+  "Ref": {
+    "description": "Ref components",
+    "classes": {
+      "Ref": {
+        "description": "References a shared component by ID. Resolved by ExperimentBuilder.",
+        "params": {
+          "ref": {
+            "type": "str",
+            "default": "''",
+            "description": "ID of the component to reference"
+          }
+        },
+        "source": "components/refs.py"
+      }
+    }
+  },
+  "Value": {
+    "description": "Value components",
+    "classes": {
+      "Literal": {
+        "description": "A constant value embedded directly in the config.",
+        "params": {
+          "value": {
+            "type": "object",
+            "default": null,
+            "description": "The constant value"
+          }
+        },
+        "source": "components/expressions.py"
+      },
+      "VariableRef": {
+        "description": "Reference an exposed variable by dotted path.\n\n    Paths like ``\"engine._game_kills\"`` or ``\"self.tile.x\"`` are resolved\n    by the ConditionContext's ``resolve()`` method.",
+        "params": {
+          "path": {
+            "type": "str",
+            "default": "''",
+            "description": "Dotted path to an exposed variable"
+          }
+        },
+        "source": "components/expressions.py"
+      },
+      "FunctionCall": {
+        "description": "Call an exposed function with expression arguments.\n\n    ``function`` is a dotted path to a callable (e.g. ``\"map.distance\"``).\n    ``args`` are sub-expressions evaluated before the call.",
+        "params": {
+          "function": {
+            "type": "str",
+            "default": "''",
+            "description": "Dotted path to an exposed function"
+          },
+          "args": {
+            "type": "list",
+            "default": "[]",
+            "description": "Argument expressions"
+          }
+        },
+        "source": "components/expressions.py"
+      }
+    }
+  },
+  "Condition": {
+    "description": "Condition components",
+    "classes": {
+      "And": {
+        "description": "True when all sub-conditions are true.",
+        "params": {
+          "conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Sub-conditions \u2014 all must be true"
+          }
+        },
+        "source": "components/conditions.py"
+      },
+      "Or": {
+        "description": "True when at least one sub-condition is true.",
+        "params": {
+          "conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Sub-conditions \u2014 at least one must be true"
+          }
+        },
+        "source": "components/conditions.py"
+      },
+      "Not": {
+        "description": "Negates a single sub-condition.",
+        "params": {
+          "condition": {
+            "type": "component",
+            "default": null,
+            "description": "Condition to negate"
+          }
+        },
+        "source": "components/conditions.py"
+      },
+      "Comparison": {
+        "description": "Compare two expressions using an operator.\n\n    ``op`` is one of ``\"==\"``, ``\"!=\"``, ``\"<\"``, ``\"<=\"``, ``\">\"``, ``\">=\"``.",
+        "params": {
+          "left": {
+            "type": "component",
+            "default": null,
+            "description": "Left-hand expression"
+          },
+          "op": {
+            "type": "str",
+            "default": "'=='",
+            "description": "Comparison operator"
+          },
+          "right": {
+            "type": "component",
+            "default": null,
+            "description": "Right-hand expression"
+          }
+        },
+        "source": "components/conditions.py"
+      },
+      "IsTruthy": {
+        "description": "True when the expression value is truthy.",
+        "params": {
+          "value": {
+            "type": "component",
+            "default": null,
+            "description": "Expression to test for truthiness"
+          }
+        },
+        "source": "components/conditions.py"
+      },
+      "AgentCountCheck": {
+        "description": "Check the alive count of a named agent type.\n\n    Example: \"crewmates <= 1\" \u2192 AgentCountCheck(agent_type=\"Crewmate\", op=\"<=\", count=1)",
+        "params": {
+          "agent_type": {
+            "type": "str",
+            "default": "''",
+            "description": "Name of the agent type to count"
+          },
+          "op": {
+            "type": "str",
+            "default": "'<='",
+            "description": "Comparison operator"
+          },
+          "count": {
+            "type": "int",
+            "default": "0",
+            "description": "Threshold to compare against"
+          }
+        },
+        "source": "components/conditions.py"
+      },
+      "AgentTypeCheck": {
+        "description": "Check whether the current agent matches a named agent type.",
+        "params": {
+          "agent_type": {
+            "type": "str",
+            "default": "''",
+            "description": "Name of the agent type to match"
+          }
+        },
+        "source": "components/conditions.py"
+      }
+    }
+  },
+  "ContextManager": {
+    "description": "ContextManager components",
+    "classes": {
+      "ContextManager": {
+        "description": "Configurable context builder \u2014 defines channels and prompt templates\n    for building agent context. One per agent type; the engine creates\n    runtime copies per agent from this template.",
+        "params": {
+          "base_prompt": {
+            "type": "str",
+            "default": "''",
+            "description": "Base system prompt for all agents"
+          },
+          "channels": {
+            "type": "list",
+            "default": "[]",
+            "description": "Channel definitions [{name, ctype}]"
+          }
+        },
+        "source": "components/context_manager.py",
+        "exposes": {
+          "variables": {},
+          "functions": {
+            "build_prompt": {
+              "args": [],
+              "returns": "str",
+              "desc": "Build the full prompt from all channels"
+            },
+            "build_messages": {
+              "args": [],
+              "returns": "list[dict]",
+              "desc": "Build API-compatible messages from channels"
+            }
+          }
+        }
+      }
+    }
+  },
+  "ChatContext": {
+    "description": "ChatContext components",
+    "classes": {
+      "ChatContext": {
+        "description": "Encapsulates chat message routing between agents.\n\n    Handles proximity-based delivery, global chat history, and broadcast\n    behaviour. One instance per engine; routes chat from any agent to\n    nearby agents via their :class:`ContextManager` channels.\n\n    Config params:\n        chat_distance: max tiles for a message to reach another agent.\n                       Default is very large (10000), making chat global.",
+        "params": {
+          "chat_distance": {
+            "type": "float",
+            "default": "10000.0",
+            "description": "Max tiles for chat delivery"
+          }
+        },
+        "source": "components/context_manager.py"
+      }
+    }
+  }
+}

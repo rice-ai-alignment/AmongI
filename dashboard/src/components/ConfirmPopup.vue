@@ -39,10 +39,13 @@ function onClick(btn) { emit("action", btn.action); }
 </template>
 
 <style scoped>
-.popup-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.popup-acts { display: flex; gap: 14px; justify-content: center; margin-top: 6px; }
-.pop-link { color: var(--text-dim); cursor: pointer; font-size: 18px; }
+.popup-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.popup-acts { display: flex; gap: var(--sp-xl); justify-content: center; margin-top: var(--sp-sm); }
+.pop-link { color: var(--text-dim); cursor: pointer; font-size: var(--fs-ui); }
 .pop-link:hover { color: var(--text); }
 .pop-link.r { color: var(--red); }
-.pop-link.r:hover { color: var(--red); text-shadow: 0 0 4px rgba(255,85,85,0.4); }
+.pop-link.r:hover { color: var(--red); text-shadow: var(--glow-red); }
 </style>

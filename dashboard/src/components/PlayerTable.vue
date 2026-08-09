@@ -15,7 +15,7 @@ const columns = [
 
 function formatCell(key, value, row) {
   if (key === "name") {
-    return { text: value || "?", style: `color:${row.color || "#4fe87c"}`, bold: true };
+    return { text: value || "?", style: `color:${row.color || "var(--green)"}`, bold: true };
   }
   if (key === "wins" || key === "rate") {
     const cls = row._wins > 0 ? "g" : "n";
