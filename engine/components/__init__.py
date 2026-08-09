@@ -19,6 +19,11 @@ from .conditions import (
     AgentCountCheck, AgentTypeCheck,
 )
 from .context_manager import ContextManager, ContextChannel, ChannelType, ChatContext
+from .event_manager import EventManager
+
+# Game framework
+from games.base import GamePhase as BaseGamePhase, TargetedAction, BaseGame
+from games.among_us import AmongUsGame, KillAction, ReportBodyAction, PlayPhase, VotingPhase as AmongUsVotingPhase
 
 COMPONENT_REGISTRY = {
     "Map": {
@@ -76,5 +81,19 @@ COMPONENT_REGISTRY = {
     },
     "ChatContext": {
         "ChatContext": ChatContext,
+    },
+    "EventManager": {
+        "EventManager": EventManager,
+    },
+    "Game": {
+        "AmongUsGame": AmongUsGame,
+    },
+    "GamePhase": {
+        "PlayPhase": PlayPhase,
+        "VotingPhase": AmongUsVotingPhase,
+    },
+    "TargetedAction": {
+        "KillAction": KillAction,
+        "ReportBodyAction": ReportBodyAction,
     },
 }

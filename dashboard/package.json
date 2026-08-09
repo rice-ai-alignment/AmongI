@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "predev": "npm run exportschema",
     "build": "vite build",
     "prebuild": "npm run exportschema",
     "exportschema": "bash export-schema.sh",
