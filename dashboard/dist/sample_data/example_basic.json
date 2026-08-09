@@ -3,6 +3,7 @@
   "description": "5 agents (4 crew + 1 impostor) on a 16×16 map with kills, body reports, and voting. Uses the new game-module architecture.",
   "type": "Game",
   "class": "AmongUsGame",
+  "game_count": 5,
   "map": {"type": "Map", "class": "SquareMap", "size": 16},
   "agents": {
     "type": "AgentConfig",

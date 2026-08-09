@@ -11,12 +11,9 @@
 #
 # Multiple servers: SERVER_NAME=node2 docker compose -p node2 up -d
 
-version: "3.8"
-
 services:
   server:
     build: .
-    image: amongi-server:latest
     container_name: amongi-server
     restart: unless-stopped
 

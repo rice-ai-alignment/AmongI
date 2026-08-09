@@ -711,8 +711,8 @@
           },
           "game_count": {
             "type": "int",
-            "default": "0",
-            "description": "Max games to play (0 = unlimited)"
+            "default": "1",
+            "description": "Max games to play"
           }
         },
         "source": "games/among_us/game.py"

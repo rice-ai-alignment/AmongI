@@ -323,8 +323,8 @@ function handleLineClick(line) {
 
       <div v-else-if="selectedExample" :key="'ex-' + selectedExample.filename">
         <TerminalCard :title="selectedExample.name" :min-width="50" :collapsible="false">
-          <div><span class="dim">{{ selectedExample.description }}</span></div>
-          <div><span class="dim">file: {{ selectedExample.filename }}</span></div>
+          <div class="cv-example-meta"><span class="dim">{{ selectedExample.description }}</span></div>
+          <div class="cv-example-meta"><span class="dim">file: {{ selectedExample.filename }}</span></div>
         </TerminalCard>
         <ConfigCard :config="selectedExample.data" :title="selectedExample.filename" />
       </div>
@@ -382,5 +382,6 @@ function handleLineClick(line) {
 
 .cv-empty { padding-top: var(--sp-xs); white-space: pre; }
 .cv-source { font-size: var(--fs-sm); padding-bottom: var(--sp-xxs); }
+.cv-example-meta { font-size: var(--fs-sm); }
 .box-label { font-size: var(--fs-ui); color: var(--green); text-shadow: var(--glow-medium); }
 </style>
