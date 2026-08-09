@@ -23,7 +23,7 @@ class WinCondition(ExperimentComponent):
     """
     component_type = "WinCondition"
     params = {
-        "winner": Param(str, "", "Agent group that wins (Crewmate / Imposter)"),
+        "winner": Param(str, "", "Agent group that wins — must match an AgentType.id"),
         "condition": Param(None, None, "Condition that triggers this outcome (or null for timer-only)"),
     }
 

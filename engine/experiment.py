@@ -17,10 +17,11 @@ from typing import Any
 
 class Param:
     """A typed parameter descriptor with default and description."""
-    def __init__(self, ptype, default: Any = None, desc: str = ""):
+    def __init__(self, ptype, default: Any = None, desc: str = "", element_type=None):
         self.ptype = ptype
         self.default = default
         self.desc = desc
+        self.element_type = element_type  # for list params: type of elements
 
 
 class ExperimentComponent(ABC):
@@ -288,12 +289,28 @@ def schema_to_json(registry: dict = None) -> dict:
                 continue
             params = {}
             for pname, param in cls.params.items():
-                tn = param.ptype.__name__ if param.ptype else "component"
-                params[pname] = {
-                    "type": tn,
-                    "default": repr(param.default) if param.default is not None else None,
-                    "description": param.desc,
-                }
+                if isinstance(param, Param):
+                    tn = param.ptype.__name__ if param.ptype else "component"
+                    entry = {
+                        "type": tn,
+                        "default": repr(param.default) if param.default is not None else None,
+                        "description": param.desc,
+                    }
+                    if param.element_type:
+                        et = param.element_type
+                        entry["element_type"] = et.__name__ if hasattr(et, '__name__') else str(et)
+                    params[pname] = entry
+                elif isinstance(param, tuple) and len(param) >= 2:
+                    ptype, default = param[0], param[1]
+                    desc = param[2] if len(param) > 2 else ""
+                    tn = ptype.__name__ if hasattr(ptype, '__name__') else str(ptype)
+                    params[pname] = {
+                        "type": tn,
+                        "default": repr(default) if default is not None else None,
+                        "description": desc,
+                    }
+                else:
+                    params[pname] = {"type": "unknown", "default": None, "description": ""}
             # Include exposes metadata if the class declares it
             exposes = getattr(cls, "exposes", None)
             class_entry = {

@@ -346,7 +346,7 @@
           "winner": {
             "type": "str",
             "default": "''",
-            "description": "Agent group that wins (Crewmate / Imposter)"
+            "description": "Agent group that wins \u2014 must match an AgentType.id"
           },
           "condition": {
             "type": "component",
@@ -436,7 +436,7 @@
     "description": "Experiment components",
     "classes": {
       "Experiment": {
-        "description": "Top-level experiment \u2014 composes engine, phases, map, and agents.",
+        "description": "Legacy top-level config \u2014 superseded by game modules (e.g. AmongUsGame).\n\n    Kept for backward compatibility with older experiment.json files that\n    use ``free_roam`` / ``voting`` keys.  New configs should use a Game\n    type (e.g. ``AmongUsGame``) with a ``phases`` list.",
         "params": {
           "engine": {
             "type": "EngineConfig",
@@ -446,12 +446,12 @@
           "free_roam": {
             "type": "component",
             "default": null,
-            "description": "Free-roam phase config"
+            "description": "[legacy] Free-roam phase config"
           },
           "voting": {
             "type": "component",
             "default": null,
-            "description": "Voting phase config"
+            "description": "[legacy] Voting phase config"
           }
         },
         "source": "components/engine.py"
@@ -668,6 +668,174 @@
           }
         },
         "source": "components/context_manager.py"
+      }
+    }
+  },
+  "EventManager": {
+    "description": "EventManager components",
+    "classes": {
+      "EventManager": {
+        "description": "Handles event logging, render emission, and trace output.\n\n    The engine calls :meth:`emit` for every game event.  This method\n    writes to the JSONL log and pushes to the Godot renderer in one call.\n    Trace entries (LLM prompts, decisions) go through :meth:`trace`.",
+        "params": {},
+        "source": "components/event_manager.py"
+      }
+    }
+  },
+  "Game": {
+    "description": "Game components",
+    "classes": {
+      "AmongUsGame": {
+        "description": "Among Us \u2014 crewmates vs imposters with kills, voting, and ejection.\n\n    Phases:\n        PlayPhase \u2014 free-roam with movement, chat, and kills.\n        VotingPhase \u2014 emergency meeting triggered by a kill.",
+        "params": {
+          "phases": {
+            "type": "list",
+            "default": "[]",
+            "description": "GamePhase list for this game",
+            "element_type": "ExperimentComponent"
+          },
+          "win_conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "WinCondition rules",
+            "element_type": "ExperimentComponent"
+          },
+          "map": {
+            "type": "component",
+            "default": null,
+            "description": "Map component"
+          },
+          "agents": {
+            "type": "component",
+            "default": null,
+            "description": "AgentConfig for this game"
+          },
+          "game_count": {
+            "type": "int",
+            "default": "0",
+            "description": "Max games to play (0 = unlimited)"
+          }
+        },
+        "source": "games/among_us/game.py"
+      }
+    }
+  },
+  "GamePhase": {
+    "description": "GamePhase components",
+    "classes": {
+      "PlayPhase": {
+        "description": "Free-roam exploration \u2014 agents move, chat, and can kill.\n\n    A kill triggers an emergency meeting (transition to VotingPhase).",
+        "params": {
+          "timeout": {
+            "type": "float",
+            "default": "600.0",
+            "description": "Max game duration in seconds"
+          },
+          "tick_interval": {
+            "type": "float",
+            "default": "3.0",
+            "description": "Seconds between agent decision ticks"
+          },
+          "actions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Actions available during this phase",
+            "element_type": "ExperimentComponent"
+          }
+        },
+        "source": "games/among_us/phases.py"
+      },
+      "VotingPhase": {
+        "description": "Emergency meeting \u2014 agents discuss, vote, and eject one player.\n\n    After voting concludes, checks win conditions and transitions back to\n    PlayPhase (or ends the game).",
+        "params": {
+          "timeout": {
+            "type": "float",
+            "default": "30.0",
+            "description": "Voting duration in seconds"
+          },
+          "tick_interval": {
+            "type": "float",
+            "default": "3.0",
+            "description": "Seconds between agent decision ticks"
+          },
+          "actions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Actions available during this phase",
+            "element_type": "ExperimentComponent"
+          },
+          "min_time": {
+            "type": "float",
+            "default": "15.0",
+            "description": "Minimum voting time before tallying"
+          }
+        },
+        "source": "games/among_us/phases.py"
+      }
+    }
+  },
+  "TargetedAction": {
+    "description": "TargetedAction components",
+    "classes": {
+      "KillAction": {
+        "description": "Eliminate a target agent within range.\n\n    Creates a dead body at the victim's position.  Witnesses within\n    ``witness_distance`` are notified via their event channel.  The kill\n    does NOT trigger voting \u2014 a separate :class:`ReportBodyAction` must\n    be used by any agent who discovers the body.",
+        "params": {
+          "range": {
+            "type": "int",
+            "default": "3",
+            "description": "Max tiles to reach a target"
+          },
+          "prompt": {
+            "type": "str",
+            "default": "''",
+            "description": "Description shown to the agent"
+          },
+          "available_to": {
+            "type": "list",
+            "default": "[]",
+            "description": "Agent type ids that can use this action",
+            "element_type": "str"
+          },
+          "conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Conditions that must be satisfied",
+            "element_type": "ExperimentComponent"
+          },
+          "witness_distance": {
+            "type": "int",
+            "default": "5",
+            "description": "Max tiles for other agents to witness the kill"
+          }
+        },
+        "source": "games/among_us/actions.py"
+      },
+      "ReportBodyAction": {
+        "description": "Report a dead body, triggering an emergency meeting.\n\n    Available to all agent types.  The target is the name of the dead\n    body (visible in the agent's context).  On success, emits a report\n    event that the game loop uses to transition into the voting phase.",
+        "params": {
+          "range": {
+            "type": "int",
+            "default": "5",
+            "description": "Max tiles to see and report a body"
+          },
+          "prompt": {
+            "type": "str",
+            "default": "'Report a dead body'",
+            "description": "Description shown to the agent"
+          },
+          "available_to": {
+            "type": "list",
+            "default": "[]",
+            "description": "Agent type ids that can use this action",
+            "element_type": "str"
+          },
+          "conditions": {
+            "type": "list",
+            "default": "[]",
+            "description": "Conditions that must be satisfied",
+            "element_type": "ExperimentComponent"
+          }
+        },
+        "source": "games/among_us/actions.py"
       }
     }
   }

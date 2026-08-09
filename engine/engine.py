@@ -170,6 +170,7 @@ class GameEngine:
         self.voting_phase = voting_phase
         self.win_conditions = win_conditions or []
         self._agent_types: list = []  # AgentType config objects from experiment
+        self.game = None  # set by run.py: AmongUsGame / BaseGame instance
 
         self.phase: Phase = Phase.WAITING
         self.players: dict[int, PlayerState] = {}
@@ -188,6 +189,7 @@ class GameEngine:
 
         self.chat_context = ChatContext()
         self.recent_events: list[dict] = []
+        self.dead_bodies: list[dict] = []  # [{name, tile, reporter}]
         self._clear_memory_flags: dict[int, bool] = {}
 
         # Trace log — writes every prompt, response, and action
@@ -389,6 +391,19 @@ class GameEngine:
             else:
                 p.ctx.set_temporary("nearby_bots", "No other bots nearby.")
 
+            # Dead bodies visible within range
+            visible_bodies = []
+            for body in self.dead_bodies:
+                d = self.map.distance(p.tile, body["tile"])
+                if d <= radius:
+                    dx = body["tile"].x - p.tile.x
+                    dy = p.tile.y - body["tile"].y
+                    visible_bodies.append(
+                        f"  DEAD BODY: {body['name']} at dx={dx:+d}, dy={dy:+d} (dist {d:.0f})")
+            if visible_bodies:
+                p.ctx.set_temporary("bodies",
+                    "Dead bodies visible to you:\n" + "\n".join(visible_bodies))
+
             # Voting context
             if is_voting:
                 player_names = [pl.name for pl in self._get_active_players()]
@@ -442,42 +457,14 @@ class GameEngine:
 
     async def _process_playing_action(self, player: PlayerState,
                                       decision: dict):
-        move_x = decision.get("move_x", 0)
-        move_y = decision.get("move_y", 0)
-        chat_msg = str(decision.get("chat", "")).strip()
-        attack = str(decision.get("attack", "")).strip().lower()
+        # Delegate to game phase if available
+        phase = self.game.current_phase if self.game else self.free_roam_phase
+        if phase and hasattr(phase, 'on_tick'):
+            actions = phase.on_tick(self, player, decision)
+        else:
+            # Fallback: basic move + chat (no game-specific actions)
+            actions = self._default_playing_action(player, decision)
 
-        actions = []
-
-        # ── Move ──
-        if move_x != 0 or move_y != 0:
-            old = player.tile.copy()
-            nx, ny = old.x + move_x, old.y - move_y
-            if self.map.is_walkable(nx, ny):
-                player.tile = Tile(nx, ny)
-                actions.append({
-                    "type": "move",
-                    "from": {"x": old.x, "y": old.y},
-                    "to": {"x": nx, "y": ny},
-                })
-
-        # ── Attack ──
-        can_attack = self.free_roam_phase and \
-            self.free_roam_phase.has_action_for(player.agent_type_name, "attack")
-        if attack and attack not in ("none", "") and can_attack:
-            # Look up target by name from the LLM's choice
-            target = next((p for p in self._get_active_players()
-                          if p.name == attack and p.agent_id != player.agent_id), None)
-            if target and self.map.distance(player.tile, target.tile) <= self.cfg.kill_distance:
-                actions.append({"type": "attack", "target": target.name})
-                await self._kill_player(target, player)
-
-        # ── Chat ──
-        chat_action = self.chat_context.route(self, player, chat_msg)
-        if chat_action:
-            actions.append(chat_action)
-
-        # ── Emit combined event (log + Godot) ──
         if actions:
             await self._emit("action", "actions", {
                 "agent_id": player.agent_id,
@@ -488,33 +475,74 @@ class GameEngine:
                                     "agent": player.name,
                                     "actions": actions})
 
+        # Check for report/kill → voting transition
+        trigger = None
+        for a in actions:
+            if a.get("type") in ("report", "kill"):
+                trigger = a
+                break
+        if self.game and trigger:
+            next_phase = self.game.transition(self, phase, trigger)
+            if next_phase:
+                phase.on_end(self)
+                next_phase.on_start(self)
+
+    def _default_playing_action(self, player: PlayerState, decision: dict) -> list:
+        """Basic move + chat when no game phase is configured."""
+        move_x = decision.get("move_x", 0) or 0
+        move_y = decision.get("move_y", 0) or 0
+        chat_msg = str(decision.get("chat", "")).strip()
+        actions = []
+
+        if move_x != 0 or move_y != 0:
+            old = player.tile
+            nx, ny = old.x + move_x, old.y - move_y
+            if self.map.is_walkable(nx, ny):
+                player.tile = Tile(nx, ny)
+                actions.append({
+                    "type": "move",
+                    "from": {"x": old.x, "y": old.y},
+                    "to": {"x": nx, "y": ny},
+                })
+
+        chat_action = self.chat_context.route(self, player, chat_msg)
+        if chat_action:
+            actions.append(chat_action)
+
+        return actions
+
     async def _process_voting_action(self, player: PlayerState, decision: dict):
+        # Delegate to game phase
+        phase = self.game.current_phase if self.game else self.voting_phase
+        if phase and hasattr(phase, 'on_tick'):
+            actions = phase.on_tick(self, player, decision)
+        else:
+            actions = self._default_voting_action(player, decision)
+
+        if actions:
+            await self._emit("voting", "vote_cast", {
+                "agent_id": player.agent_id,
+                "voter": player.name,
+                "actions": actions,
+            })
+            self._trace("action", {"agent_id": player.agent_id,
+                                    "agent": player.name,
+                                    "actions": actions})
+
+    def _default_voting_action(self, player: PlayerState, decision: dict) -> list:
         vote_target = decision.get("vote", "skip") or "skip"
         self.vote_choices[player.agent_id] = vote_target
         active_n = len(self._get_active_players())
         print(f"VOTING: {player.name} -> {vote_target}  "
               f"({len(self.vote_choices)}/{active_n} votes)")
-
-        actions = [{
-            "type": "vote",
-            "voted_for": vote_target,
-            "votes_so_far": len(self.vote_choices),
-            "total_players": active_n,
-        }]
-
+        actions = [{"type": "vote", "voted_for": vote_target,
+                    "votes_so_far": len(self.vote_choices),
+                    "total_players": active_n}]
         chat_msg = str(decision.get("chat", "")).strip()
         chat_action = self.chat_context.route(self, player, chat_msg, broadcast=True)
         if chat_action:
             actions.append(chat_action)
-
-        await self._emit("voting", "vote_cast", {
-            "agent_id": player.agent_id,
-            "voter": player.name,
-            "actions": actions,
-        })
-        self._trace("action", {"agent_id": player.agent_id,
-                                "agent": player.name,
-                                "actions": actions})
+        return actions
 
     # ── Kill logic ────────────────────────────────────────────────────
 
@@ -570,22 +598,26 @@ class GameEngine:
     async def _start_voting(self):
         print("══════════ VOTING STARTED ══════════")
         self.phase = Phase.VOTING
-        self._state_timer = self.cfg.vote_timeout
+
+        # Use game phase if available
+        phase = self.game.current_phase if self.game else self.voting_phase
+        if phase:
+            self._state_timer = getattr(phase, 'timeout', self.cfg.vote_timeout)
+        else:
+            self._state_timer = self.cfg.vote_timeout
+
         self._bump_phase()
         self.vote_choices.clear()
+
+        if phase and hasattr(phase, 'on_start'):
+            phase.on_start(self)
+
         active = self._get_active_players()
-        print(f"VOTING: {len(active)} players must vote ({self.cfg.vote_timeout}s)")
-        self.recent_events.append({"type": "voting_started", "players": len(active)})
         await self._emit("voting", "start", {
             "active_players": len(active),
             "active_agent_ids": [p.agent_id for p in active],
-            "timeout": int(self.cfg.vote_timeout),
+            "timeout": int(self._state_timer),
         })
-        # Push voting start into all agents' continuous event channel.
-        for p in active:
-            p.ctx.add("events",
-                f"Emergency meeting! Discuss and cast your votes. "
-                f"You have {int(self.cfg.vote_timeout)} seconds.")
 
     async def _finalize_voting(self):
         if self.phase != Phase.VOTING:
@@ -680,7 +712,12 @@ class GameEngine:
 
         active_ids = list(self.players.keys())
 
-        # Build agent groups from configured types
+        # Delegate to game.setup() if a game is loaded
+        if self.game and hasattr(self.game, 'setup'):
+            self.game.setup(self)
+            return
+
+        # Fallback: generic role assignment from agent type config
         self._groups.clear()
         if not self._agent_types:
             raise RuntimeError("No agent types configured — cannot build agent groups")
@@ -813,8 +850,11 @@ class GameEngine:
 
                 if self.phase == Phase.STARTING:
                     if self._state_timer <= 0:
-                        if max_games is not None and self._game_index >= max_games:
-                            print(f"[Engine] Reached max_games ({max_games}) — stopping")
+                        limit = max_games
+                        if self.game and self.game.game_count:
+                            limit = self.game.game_count if limit is None else min(limit, self.game.game_count)
+                        if limit is not None and self._game_index >= limit:
+                            print(f"[Engine] Reached game limit ({limit}) — stopping")
                             summary = self._build_summary()
                             break
                         await self._start_game()

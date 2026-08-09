@@ -35,16 +35,21 @@ class EngineConfig(ExperimentComponent):
 
 
 class Experiment(ExperimentComponent):
-    """Top-level experiment — composes engine, phases, map, and agents."""
+    """Legacy top-level config — superseded by game modules (e.g. AmongUsGame).
+
+    Kept for backward compatibility with older experiment.json files that
+    use ``free_roam`` / ``voting`` keys.  New configs should use a Game
+    type (e.g. ``AmongUsGame``) with a ``phases`` list.
+    """
     component_type = "Experiment"
     params = {
         "engine": Param(EngineConfig, None, "Engine parameters"),
-        "free_roam": Param(None, None, "Free-roam phase config"),
-        "voting": Param(None, None, "Voting phase config"),
+        "free_roam": Param(None, None, "[legacy] Free-roam phase config"),
+        "voting": Param(None, None, "[legacy] Voting phase config"),
     }
     def __init__(self, engine=None, free_roam=None, voting=None, **kwargs):
         super().__init__(**kwargs)
         self.engine = engine
         self.free_roam = free_roam
         self.voting = voting
-    def description(self): return "experiment"
+    def description(self): return "experiment (legacy)"
