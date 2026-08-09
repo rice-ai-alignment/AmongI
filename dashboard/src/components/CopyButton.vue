@@ -29,10 +29,10 @@ async function doCopy() {
 <style scoped>
 .cpy-btn {
   background: none;
-  border: 1px solid var(--border);
-  border-radius: 2px;
+  border: var(--border-panel);
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
-  font: 15px var(--font-mono);
+  font: var(--fs-base) var(--font-mono);
   padding: 1px 5px;
   cursor: pointer;
 }

@@ -4,6 +4,8 @@
 [ext_resource type="TileSet" uid="uid://c2607ic4e1nda" path="res://tiles.tres" id="2_klfix"]
 [ext_resource type="PackedScene" uid="uid://b23futpcvfa4x" path="res://ChatBox.tscn" id="3_0w2fn"]
 [ext_resource type="Script" uid="uid://dw5q6bkxen6g1" path="res://Scripts/export_map.gd" id="4_es5q2"]
+[ext_resource type="Script" uid="uid://dfd9341aaf8a" path="res://Scripts/PlaybackController.gd" id="5_pb"]
+[ext_resource type="PackedScene" uid="uid://dc4201522983" path="res://TimelineUI.tscn" id="6_tui"]
 
 [node name="Node2D" type="Node2D" unique_id=1285183098 node_paths=PackedStringArray("tile_map")]
 script = ExtResource("1_klfix")
@@ -16,6 +18,11 @@ tile_set = ExtResource("2_klfix")
 [node name="Camera2D" type="Camera2D" parent="." unique_id=971475910]
 
 [node name="ChatBox" parent="." unique_id=685055644 instance=ExtResource("3_0w2fn")]
+
+[node name="PlaybackController" type="Node" parent="."]
+script = ExtResource("5_pb")
+
+[node name="TimelineUI" parent="." instance=ExtResource("6_tui")]
 
 [node name="Node" type="Node" parent="." unique_id=1070185645 node_paths=PackedStringArray("tile_map")]
 script = ExtResource("4_es5q2")

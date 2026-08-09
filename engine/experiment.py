@@ -299,6 +299,7 @@ def schema_to_json(registry: dict = None) -> dict:
             class_entry = {
                 "description": (cls.__doc__ or "").strip() or class_name,
                 "params": params,
+                "source": cls.__module__.replace(".", "/") + ".py",
             }
             if exposes:
                 class_entry["exposes"] = exposes

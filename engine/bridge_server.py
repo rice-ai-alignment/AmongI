@@ -297,35 +297,31 @@ class LogStore:
 
 def compute_stats(games: list[dict], session_id: str = "") -> dict:
     """Compute aggregated stats from a list of game recaps (module-level, reusable)."""
-    by_winner = {"crewmates": 0, "imposters": 0, "timeout": 0, "token_limit": 0}
+    by_winner: dict[str, int] = {}
     total_kills = 0
     total_ejections = 0
     player_stats: dict[str, dict] = {}
 
     for g in games:
         w = g.get("winner", "unknown")
-        if w in by_winner:
-            by_winner[w] += 1
+        by_winner[w] = by_winner.get(w, 0) + 1
         total_kills += g.get("kills", 0)
         total_ejections += g.get("ejections", 0)
 
         for p in g.get("players", []):
             name = p.get("name", "unknown")
+            role = p.get("role", p.get("imposter", ""))  # new field, fallback to old
             if name not in player_stats:
                 player_stats[name] = {
-                    "name": name,
-                    "games": 0, "wins": 0,
-                    "times_imposter": 0, "kills": 0,
+                    "name": name, "role": role,
+                    "games": 0, "wins": 0, "kills": 0,
                     "color": p.get("color"),
                 }
             ps = player_stats[name]
             ps["games"] += 1
-            if p.get("imposter"):
-                ps["times_imposter"] += 1
             ps["kills"] += p.get("kills", 0)
-            won = ((p.get("imposter") and w == "imposters") or
-                   (not p.get("imposter") and w == "crewmates"))
-            if won:
+            # A win for this player: their role matches the winner group
+            if role and str(role).lower() == str(w).lower():
                 ps["wins"] += 1
 
     return {

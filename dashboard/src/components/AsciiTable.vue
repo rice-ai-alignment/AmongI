@@ -112,6 +112,6 @@ const table = computed(() => {
 <style scoped>
 .tbl-header {
   color: var(--text-dim);
-  padding-bottom: 2px;
+  padding-bottom: var(--sp-xxs);
 }
 </style>

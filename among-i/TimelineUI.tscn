@@ -1,0 +1,93 @@
+[gd_scene load_steps=4 format=3 uid="uid://dc4201522983"]
+
+[ext_resource type="Script" uid="uid://dfd9341aaf8a" path="res://Scripts/PlaybackController.gd" id="1_pb"]
+[ext_resource type="Script" uid="uid://db3914b9f431" path="res://Scripts/TimelineUI.gd" id="1_tui"]
+[ext_resource type="Script" uid="uid://d7e07defff97" path="res://Scripts/TimelineMarkers.gd" id="1_tm"]
+
+[node name="TimelineUI" type="CanvasLayer"]
+layer = 5
+script = ExtResource("1_tui")
+controller = NodePath("../PlaybackController")
+
+[node name="Panel" type="Panel" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 10.0
+offset_top = -60.0
+offset_right = -10.0
+offset_bottom = -8.0
+
+[node name="MarginContainer" type="MarginContainer" parent="Panel"]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 4
+
+[node name="HBoxContainer" type="HBoxContainer" parent="Panel/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="PlayButton" type="Button" parent="Panel/MarginContainer/HBoxContainer"]
+custom_minimum_size = Vector2(44, 0)
+layout_mode = 2
+text = "▶"
+
+[node name="SpeedButton" type="Button" parent="Panel/MarginContainer/HBoxContainer"]
+custom_minimum_size = Vector2(44, 0)
+layout_mode = 2
+text = "1x"
+
+[node name="TimeLabel" type="Label" parent="Panel/MarginContainer/HBoxContainer"]
+custom_minimum_size = Vector2(140, 0)
+layout_mode = 2
+text = "00:00 / 00:00"
+vertical_alignment = 1
+
+[node name="SliderArea" type="Control" parent="Panel/MarginContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 1
+
+[node name="TimelineSlider" type="HSlider" parent="Panel/MarginContainer/HBoxContainer/SliderArea"]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 4.0
+offset_bottom = -4.0
+step = 100.0
+editable = false
+
+[node name="Markers" type="Control" parent="Panel/MarginContainer/HBoxContainer/SliderArea"]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+script = ExtResource("1_tm")
+
+[node name="LoadButton" type="Button" parent="Panel/MarginContainer/HBoxContainer"]
+layout_mode = 2
+text = "Load Log..."
+
+[node name="LiveButton" type="Button" parent="Panel/MarginContainer/HBoxContainer"]
+visible = false
+layout_mode = 2
+text = "Live"
+
+[node name="FileLabel" type="Label" parent="Panel/MarginContainer/HBoxContainer"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = ""
+vertical_alignment = 1
+clip_text = true
+
+[node name="FileDialog" type="FileDialog" parent="."]
+title = "Open Log File"
+file_mode = 0
+access = 2
+filters = PackedStringArray("*.jsonl ; JSONL Log Files", "*.json ; JSON Files")
+current_dir = "res://../log"

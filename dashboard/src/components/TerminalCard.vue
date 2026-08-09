@@ -36,16 +36,15 @@ const box = computed(() => {
 
 <style scoped>
 .card-box {
-  background: var(--surface-1); margin-bottom: 4px; overflow: hidden;
-  box-shadow: 0 0 6px rgba(79,232,124,0.04);
-  animation: box-expand 0.3s ease backwards;
+  background: var(--surface-1); margin-bottom: var(--sp-xs); overflow: hidden;
+  box-shadow: var(--glow-subtle);
 }
-@keyframes box-expand { from { opacity: 0; transform: scaleY(0.8); } to { opacity: 1; transform: scaleY(1); } }
-.box-line { font-size: 18px; white-space: pre; line-height: 1.2; padding: 2px 8px; overflow: hidden; }
 .box-line.clickable { cursor: pointer; }
-.box-top { color: var(--border-solid); text-shadow: 0 0 6px rgba(79,232,124,0.4); }
-.box-bot { color: var(--border-solid); text-shadow: 0 0 4px rgba(79,232,124,0.3); }
-.box-body { color: var(--text-dim); padding: 0 6px 0 calc(6px + 1ch); line-height: 1.6; overflow: hidden; white-space: pre; }
+.box-body {
+  color: var(--text-dim);
+  padding: 0 var(--sp-sm) 0 calc(var(--sp-sm) + 1ch);
+  line-height: var(--lh-loose); overflow: hidden; white-space: pre;
+}
 .box-body :deep(.g) { color: var(--green); }
 .box-body :deep(.r) { color: var(--red); }
 .box-body :deep(.a) { color: var(--amber); }

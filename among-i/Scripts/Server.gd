@@ -7,6 +7,8 @@
 
 extends Node
 
+signal event_received(ev: Dictionary)
+
 @export var player_scene: PackedScene = preload("res://Player.tscn")
 @export var tile_map: TileMapLayer
 @onready var chat_box = $ChatBox
@@ -45,9 +47,22 @@ var _camera_min_world_size: float = 400.0
 
 const MAX_CHAT_MESSAGES = 50
 
+# ── Playback mode flags ────────────────────────────────────────────────────
+
+var instant_mode: bool = false   # skip tweens, snap positions
+var silent: bool = false         # suppress debug prints during fast-forward
+
 # ── Initialization ───────────────────────────────────────────────────────
 
 func _ready():
+	# If PlaybackController loaded a file (child _ready runs first), skip listening
+	if has_node("PlaybackController") and $PlaybackController.is_file_mode():
+		print("[Renderer] File replay mode — skipping WebSocket listen")
+		return
+	start_listening()
+
+
+func start_listening():
 	var err = _server.listen(_render_port)
 	if err == OK:
 		print("[Renderer] Listening for engine on port ", _render_port)
@@ -55,6 +70,19 @@ func _ready():
 		print("[Renderer] FATAL: Cannot bind port ", _render_port, " (error ", err, ")")
 		print("[Renderer] Is another Godot instance or process using this port?")
 		get_tree().quit(1)
+
+
+func stop_listening():
+	_server.stop()
+	_render_peer = null
+	_peer_id = -1
+	print("[Renderer] Stopped listening")
+
+
+func clear_world():
+	_clear_all_players()
+	chat_box.clear()
+	_game_active = false
 
 # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -108,9 +136,16 @@ func _poll_render_peer():
 
 # ── Event dispatcher ─────────────────────────────────────────────────────
 
+func handle_event(event: Dictionary):
+	"""Public entry point for PlaybackController (file replay and live accumulation)."""
+	_handle_event(event)
+
+
 func _handle_event(event: Dictionary):
+	event_received.emit(event)
+
 	var etype: String = event.get("type", "")
-	if etype not in ["", "heartbeat"]:
+	if etype not in ["", "heartbeat"] and not silent:
 		print("[Renderer] Received event type: ", etype)
 
 	match etype:
@@ -189,13 +224,13 @@ func _ev_game_start(ev: Dictionary):
 		)
 	# Already done by the chage state thing
 	var gid = ev.get("game_id", "?")
-	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game started! (" + str(gid) + ")")
+	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game started! (" + str(gid) + ")", ev.get("elapsed_ms", -1.0))
 
 func _ev_game_end(ev: Dictionary):
 	_game_active = false
 	var winner = ev.get("winner", "?")
 	var recap = ev.get("recap", {})
-	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game Over! " + str(winner) + " win!")
+	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game Over! " + str(winner) + " win!", ev.get("elapsed_ms", -1.0))
 	print("[Renderer] Game ended — winner: ", winner, " recap: ", recap)
 
 func _ev_phase_change(ev: Dictionary):
@@ -203,11 +238,11 @@ func _ev_phase_change(ev: Dictionary):
 	var countdown = ev.get("countdown_sec", 0)
 	match phase:
 		"starting":
-			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game starting in " + str(int(countdown)) + "s...")
+			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game starting in " + str(int(countdown)) + "s...", ev.get("elapsed_ms", -1.0))
 		"voting":
-			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: ══════ VOTING PHASE (" + str(int(countdown)) + "s) ══════")
+			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: ══════ VOTING PHASE (" + str(int(countdown)) + "s) ══════", ev.get("elapsed_ms", -1.0))
 		"playing":
-			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Playing!")
+			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Playing!", ev.get("elapsed_ms", -1.0))
 
 # ── Player spawn / despawn ──
 
@@ -264,7 +299,10 @@ func _ev_move_player(ev: Dictionary):
 			to = Vector2i(to_data.get("x", 0), to_data.get("y", 0))
 		else:
 			to = Vector2i(to_data[0], to_data[1])
-		_players[aid].move_to_tile(to)
+		if instant_mode:
+			_players[aid].set_tile_position(to)
+		else:
+			_players[aid].move_to_tile(to)
 
 # ── Player death / ejection / respawn ──
 
@@ -311,7 +349,7 @@ func _ev_chat(ev: Dictionary):
 
 	# Add to chat HUD
 	var bbcode = "[b][color=%s]%s[/color][/b]: %s" % [color_str, pname, message]
-	chat_box.add_message(bbcode)
+	chat_box.add_message(bbcode, ev.get("elapsed_ms", -1.0))
 
 # ── Combined per-agent actions ────────────────────────────────────────
 
@@ -320,24 +358,29 @@ func _ev_actions(ev: Dictionary):
 	var aid = int(ev.get("agent_id", -1))
 	var pname = ev.get("actor", _player_names.get(aid, "?"))
 	var actions: Array = ev.get("actions", [])
-	print("[Renderer] _ev_actions: agent=", aid, " pname=", pname, " actions=", actions.size())
+	if not silent:
+		print("[Renderer] _ev_actions: agent=", aid, " pname=", pname, " actions=", actions.size())
 
 	for act in actions:
 		var atype: String = act.get("type", "")
-		print("[Renderer]   sub-action: ", atype, " act=", act)
+		if not silent:
+			print("[Renderer]   sub-action: ", atype, " act=", act)
 		match atype:
 			"move":
-				if aid in _players and is_instance_valid(_players[aid]):
-					var to_data = act.get("to", {})
-					var to: Vector2i
-					if to_data is Dictionary:
-						to = Vector2i(to_data.get("x", 0), to_data.get("y", 0))
-					else:
-						to = Vector2i(to_data[0], to_data[1])
-					print("[Renderer]   move player ", aid, " to ", to)
-					_players[aid].move_to_tile(to)
+				var to_data = act.get("to", {})
+				var to: Vector2i
+				if to_data is Dictionary:
+					to = Vector2i(to_data.get("x", 0), to_data.get("y", 0))
 				else:
-					print("[Renderer]   player ", aid, " not found in _players: ", _players.keys())
+					to = Vector2i(to_data[0], to_data[1])
+				if aid in _players and is_instance_valid(_players[aid]):
+					if instant_mode:
+						_players[aid].set_tile_position(to)
+					else:
+						_players[aid].move_to_tile(to)
+				else:
+					# Lazy spawn — covers logs where game_start lacks players array
+					_spawn_player_node(aid, pname, to, aid % AGENT_COLORS.size())
 
 			"say":
 				var message: String = act.get("message", "")
@@ -355,7 +398,7 @@ func _ev_actions(ev: Dictionary):
 						speech_bubble.visible = true
 
 				var bbcode = "[b][color=%s]%s[/color][/b]: %s" % [color_str, pname, message]
-				chat_box.add_message(bbcode)
+				chat_box.add_message(bbcode, ev.get("elapsed_ms", -1.0))
 
 			"attack":
 				# Kill rendering is handled by the separate kill event.
@@ -376,7 +419,7 @@ func _ev_system_message(ev: Dictionary):
 	var message: String = ev.get("message", "")
 	if message == "":
 		return
-	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: " + message)
+	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: " + message, ev.get("elapsed_ms", -1.0))
 	print("[Renderer] SYSTEM: ", message)
 
 # ── Voting ──
@@ -387,7 +430,7 @@ func _ev_voting_start(ev: Dictionary):
 	var names = []
 	for aid in players:
 		names.append(_player_names.get(aid, "?"))
-	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Emergency meeting! " + str(names.size()) + " players voting (" + str(timeout) + "s)")
+	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Emergency meeting! " + str(names.size()) + " players voting (" + str(timeout) + "s)", ev.get("elapsed_ms", -1.0))
 	print("[Renderer] Voting started — players: ", ", ".join(names))
 
 func _ev_voting_result(ev: Dictionary):
@@ -415,12 +458,12 @@ func _ev_voting_result(ev: Dictionary):
 	if aid in _players and is_instance_valid(_players[aid]):
 		_players[aid].visible = false
 
-	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Votes: " + tally_str)
+	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Votes: " + tally_str, ev.get("elapsed_ms", -1.0))
 	if ejected != "":
 		var imp_label = " (was imposter!)" if was_imposter else ""
-		chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: " + str(ejected) + " was ejected!" + imp_label)
+		chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: " + str(ejected) + " was ejected!" + imp_label, ev.get("elapsed_ms", -1.0))
 	else:
-		chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: No ejection — tie or skip.")
+		chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: No ejection — tie or skip.", ev.get("elapsed_ms", -1.0))
 
 # ── Camera ───────────────────────────────────────────────────────────────
 
@@ -466,7 +509,11 @@ func _update_camera(_delta):
 	# Center
 	var target_pos = (min_pos + max_pos) / 2.0
 
-	# Smooth interpolation
-	var weight = clamp(_camera_smooth_speed * _delta, 0.0, 1.0)
-	camera.global_position = camera.global_position.lerp(target_pos, weight)
-	camera.zoom = camera.zoom.lerp(Vector2(target_zoom, target_zoom), weight)
+	# Smooth interpolation (skip during instant_mode for snappy seek)
+	if instant_mode:
+		camera.global_position = target_pos
+		camera.zoom = Vector2(target_zoom, target_zoom)
+	else:
+		var weight = clamp(_camera_smooth_speed * _delta, 0.0, 1.0)
+		camera.global_position = camera.global_position.lerp(target_pos, weight)
+		camera.zoom = camera.zoom.lerp(Vector2(target_zoom, target_zoom), weight)

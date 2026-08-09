@@ -57,12 +57,11 @@ class ContextManager(ExperimentComponent):
         },
     }
 
-    def __init__(self, agent_name: str = "", is_imposter: bool = False, **kwargs):
+    def __init__(self, agent_name: str = "", **kwargs):
         # Pull config params from kwargs before passing to ExperimentComponent
         cfg_channels = kwargs.pop("channels", None) or []
         super().__init__(**kwargs)
         self.agent_name = agent_name
-        self.is_imposter = is_imposter
         self.first_turn = True
         self.channels: dict[str, ContextChannel] = {}
 
@@ -144,3 +143,66 @@ class ContextManager(ExperimentComponent):
 
     def description(self) -> str:
         return f"context manager ({len(self.channels)} channels)"
+
+
+# ── ChatContext ──────────────────────────────────────────────────────────
+
+
+class ChatContext(ExperimentComponent):
+    """Encapsulates chat message routing between agents.
+
+    Handles proximity-based delivery, global chat history, and broadcast
+    behaviour. One instance per engine; routes chat from any agent to
+    nearby agents via their :class:`ContextManager` channels.
+
+    Config params:
+        chat_distance: max tiles for a message to reach another agent.
+                       Default is very large (10000), making chat global.
+    """
+
+    component_type = "ChatContext"
+    params = {
+        "chat_distance": Param(float, 10000.0, "Max tiles for chat delivery"),
+    }
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.recent_global_chats: list[str] = []
+
+    def route(self, engine, player, message: str,
+              broadcast: bool = False) -> dict | None:
+        """Route a chat message from *player* to nearby agents.
+
+        Appends to each recipient's ``chat`` channel (via
+        :meth:`ContextManager.add`) and to the global chat log.
+        Returns the action dict for logging (does NOT emit events).
+
+        Args:
+            engine: The :class:`GameEngine` instance (provides map +
+                    ``_get_active_players()``).
+            player: The sending :class:`PlayerState`.
+            message: The chat text.
+            broadcast: If True, deliver to all active players regardless
+                       of distance (used during voting).
+        """
+        if not message:
+            return None
+        chat_line = f"{player.name}: {message}"
+        self.recent_global_chats.append(chat_line)
+        action = {
+            "type": "say",
+            "message": message,
+            "broadcast": broadcast,
+            "pos": {"x": player.tile.x, "y": player.tile.y},
+        }
+        for other in engine._get_active_players():
+            if other.agent_id == player.agent_id:
+                continue
+            if engine.map.distance(player.tile, other.tile) <= self.chat_distance or broadcast:
+                dx = player.tile.x - other.tile.x
+                dy = other.tile.y - player.tile.y  # Y-up for display
+                other.ctx.add("chat", f"{chat_line}  (dx={dx:+d}, dy={dy:+d})")
+        return action
+
+    def description(self) -> str:
+        return f"chat context (distance={self.chat_distance}, {len(self.recent_global_chats)} messages)"

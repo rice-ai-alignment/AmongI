@@ -12,8 +12,28 @@ const MAX_MESSAGES = 50
 func _ready():
 	pass
 
-func add_message(bbcode_msg: String) -> void:
-	var timestamp = Time.get_time_string_from_system()
+
+func clear() -> void:
+	for c in message_container.get_children():
+		c.queue_free()
+
+
+func _fmt_ms(ms: float) -> String:
+	var total_sec := int(ms / 1000.0)
+	var hours := total_sec / 3600
+	var minutes := (total_sec % 3600) / 60
+	var seconds := total_sec % 60
+	if hours > 0:
+		return "%d:%02d:%02d" % [hours, minutes, seconds]
+	return "%d:%02d" % [minutes, seconds]
+
+
+func add_message(bbcode_msg: String, elapsed_ms: float = -1.0) -> void:
+	var timestamp: String
+	if elapsed_ms >= 0.0:
+		timestamp = _fmt_ms(elapsed_ms)
+	else:
+		timestamp = Time.get_time_string_from_system()
 
 	if message_container.get_child_count() >= MAX_MESSAGES:
 		message_container.get_child(0).queue_free()
