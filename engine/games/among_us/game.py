@@ -24,11 +24,11 @@ class AmongUsGame(BaseGame):
         if not engine._agent_types:
             raise RuntimeError("No agent types configured for AmongUsGame")
 
-        # Build agent groups
+        # Build agent groups — use the engine's AgentGroup with dynamic alive_count
+        from engine import AgentGroup
         engine._groups.clear()
         for at in engine._agent_types:
-            engine._groups[at.id] = type(
-                "AgentGroup", (), {"name": at.id, "alive_count": at.count})()
+            engine._groups[at.id] = AgentGroup(name=at.id, _engine=engine)
 
         # Assign players to types based on configured counts
         type_assignments = []
@@ -46,15 +46,14 @@ class AmongUsGame(BaseGame):
             p.first_time = True
             p.tile = engine.map.random_walkable_tile()
 
-            # Context from AgentType config
+            # Context from AgentType config — base context is already
+            # initialised by the engine before setup() is called.
             at = next((t for t in engine._agent_types
                        if t.id == p.agent_type_name), None)
-            p.ctx.set_constant("system", engine.BASE_PROMPT)
             if at and at.prompt:
                 p.ctx.set_constant("role", at.prompt)
             if at and at.context_manager and at.context_manager.base_prompt:
                 p.ctx.set_constant("system", at.context_manager.base_prompt)
-            p.agent.set_intro(engine.BASE_PROMPT)
 
         # Print role assignments
         by_type: dict[str, list[str]] = {}

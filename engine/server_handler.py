@@ -60,13 +60,13 @@ def _get_cpu_mem() -> tuple[float, float]:
 
 def _firestore_client():
     """Return a Firestore client (requires firebase_admin initialized)."""
-    from google.cloud import firestore
+    import firebase_admin
+    from firebase_admin import firestore
     return firestore.client()
 
 
 def _servers_col():
-    from bridge_server import FIRESTORE_COLLECTION
-    return _firestore_client().collection(FIRESTORE_COLLECTION)
+    return _firestore_client().collection("servers")
 
 
 def _jobs_col():
@@ -250,11 +250,12 @@ class ServerHandler:
 
     async def recover_stale_jobs(self):
         """On startup, reset any jobs stuck in 'claimed' or 'running' from a crash."""
+        from firebase_admin import firestore
         try:
             jobs_col = _jobs_col()
             for status in ("claimed", "running"):
-                stale = jobs_col.where("status", "==", status) \
-                    .where("claimed_by", "==", self.server_id).limit(20).stream()
+                stale = jobs_col.where(filter=firestore.FieldFilter("status", "==", status)) \
+                    .where(filter=firestore.FieldFilter("claimed_by", "==", self.server_id)).limit(20).stream()
                 for job_doc in stale:
                     data = job_doc.to_dict()
                     claimed_at = data.get("claimed_at")
@@ -279,10 +280,11 @@ class ServerHandler:
                 await asyncio.sleep(self._poll_interval)
                 continue
 
+            from firebase_admin import firestore
             try:
                 jobs_col = _jobs_col()
                 # Query oldest queued job
-                query = jobs_col.where("status", "==", "queued") \
+                query = jobs_col.where(filter=firestore.FieldFilter("status", "==", "queued")) \
                     .order_by("created_at").limit(1)
                 results = list(query.stream())
                 if not results:
@@ -328,7 +330,7 @@ class ServerHandler:
                 # ── Claim transactionally ──────────────────────
                 # Use a Firestore transaction to atomically claim the job,
                 # guarding against two servers racing on the same queued job.
-                from google.cloud import firestore as _fs
+                from firebase_admin import firestore as _fs
                 db = _firestore_client()
 
                 @_fs.transactional
@@ -413,7 +415,6 @@ class ServerHandler:
 
     async def _run_job(self, job_id: str, job: dict) -> dict:
         """Run a single experiment job. Returns result summary dict."""
-        config_data = job.get("config", {})
         max_games = job.get("max_games", 1)
         study_id = job.get("study_id", "")
         exp_code = job.get("experiment_code", "")
@@ -426,12 +427,39 @@ class ServerHandler:
         job_log_dir = os.path.join(self._log_dir, job_id)
         os.makedirs(job_log_dir, exist_ok=True)
 
-        # ── Build experiment from config dict ─────────────────
+        # ── Load config from experiment doc ────────────────────
         from experiment import build_experiment_from_dict
+        from bridge_server import _firestore_ready, STUDIES_COLLECTION
+
+        config_data = job.get("config", {})  # fallback for old jobs
+        config_path = f"{STUDIES_COLLECTION}/{study_id}/experiments/{exp_code}"
+        if _firestore_ready and study_id and exp_code:
+            from firebase_admin import firestore as _fs
+            try:
+                db = _fs.client()
+                exp_doc = db.collection(STUDIES_COLLECTION).document(study_id) \
+                          .collection("experiments").document(exp_code).get()
+                if exp_doc.exists:
+                    stored = exp_doc.to_dict().get("config")
+                    if stored:
+                        config_data = stored
+                        print(f"[ServerHandler] Loaded config from {config_path}")
+                else:
+                    print(f"[ServerHandler] Experiment doc not found: {config_path}")
+            except Exception as e:
+                print(f"[ServerHandler] Could not read {config_path}: {e}")
+                # Fall back to config in job doc if present
+
+        if not config_data:
+            raise RuntimeError(
+                f"No 'config' field on {config_path}. "
+                "Dashboard: select the experiment → config tab → edit → save.")
+
         exp = build_experiment_from_dict(config_data)
 
         from experiment_runtime import experiment_to_runtime
-        config, free_roam, voting, win_conditions, map_data = experiment_to_runtime(exp)
+        config, free_roam, voting, win_conditions, position_mode, map_data, agent_types = \
+            experiment_to_runtime(exp)
 
         # ── Engine ────────────────────────────────────────────
         from engine import GameEngine
@@ -448,9 +476,11 @@ class ServerHandler:
         engine = GameEngine(config, map_data, event_store, render_client, [],
                             free_roam_phase=free_roam,
                             voting_phase=voting,
-                            win_conditions=win_conditions)
-        engine._agent_types = exp.engine.agents.types
+                            win_conditions=win_conditions,
+                            position_mode=position_mode)
+        engine._agent_types = agent_types
         engine._experiment_config = exp.to_json()
+        engine.game = exp
 
         # ── Bridge (push games + stats to Firestore) ──────────
         from bridge_server import LogStore, _firestore_ready, init_firestore
@@ -461,9 +491,20 @@ class ServerHandler:
         store.load_logs()
 
         async def _tail_loop():
+            last_game_count = 0
             while not self._shutting_down:
                 try:
                     store.tail()
+                    # Push partial progress to job doc as games complete
+                    if len(store.games) > last_game_count:
+                        last_game_count = len(store.games)
+                        try:
+                            _jobs_col().document(job_id).update({
+                                "result": {"games_completed": last_game_count},
+                                "updated_at": datetime.now(timezone.utc),
+                            })
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 await asyncio.sleep(5.0)
@@ -577,6 +618,8 @@ async def main():
         print("\n[ServerHandler] Interrupted — shutting down...")
     finally:
         await handler.shutdown()
+
+
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ class EngineConfig(ExperimentComponent):
             "visibility_radius": "int — radius for agent world view",
             "witness_distance": "int — max tiles to witness an attack",
             "game_kills": "int — total eliminations this game",
-            "game_index": "int — current game number (1-based)",
+            "game_index": "int — current game number (0-based)",
             "token_limit": "int — total token budget across all agents",
             "phase": "str — current game phase name",
         },

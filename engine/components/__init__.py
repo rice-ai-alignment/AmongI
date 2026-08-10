@@ -13,7 +13,7 @@ from .phases import FreeRoamPhase, VotingPhase
 from .win_conditions import WinCondition
 from .engine import EngineConfig, Experiment
 from .refs import Ref
-from .expressions import Literal, VariableRef, FunctionCall
+from .expressions import Literal, VariableRef, FunctionCall, MathOp
 from .conditions import (
     And, Or, Not, Comparison, IsTruthy,
     AgentCountCheck, AgentTypeCheck,
@@ -66,6 +66,7 @@ COMPONENT_REGISTRY = {
         "Literal": Literal,
         "VariableRef": VariableRef,
         "FunctionCall": FunctionCall,
+        "MathOp": MathOp,
     },
     "Condition": {
         "And": And,

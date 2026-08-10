@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, reactive } from "vue";
 import TerminalCard from "./TerminalCard.vue";
 import TypedSpan from "./TypedSpan.vue";
 import { TYPE } from "../composables/typeSettings.js";
@@ -12,6 +12,46 @@ const props = defineProps({
 const schemaMap = ref({});
 const N = 7;
 
+// ── Mouse-tracking tooltip ────────────────────────────────────────
+const tip = reactive({
+  visible: false,
+  x: 0, y: 0,
+  html: "",
+  typeName: "",
+  className: "",
+  params: [],
+  source: "",
+});
+
+let tipTimeout = null;
+
+function showTip(e, line) {
+  if (!line || !line.tooltip) return;
+  clearTimeout(tipTimeout);
+  tip.visible = true;
+  tip.x = e.clientX + 14;
+  tip.y = e.clientY + 14;
+  tip.typeName = line.typeName || "";
+  tip.className = line.className || "";
+  tip.params = line.params || [];
+  tip.source = line.source || "";
+  tip.html = line.tooltip || "";
+  tipTimeout = null;
+}
+
+function moveTip(e) {
+  tip.x = e.clientX + 14;
+  tip.y = e.clientY + 14;
+}
+
+function hideTip() {
+  tipTimeout = setTimeout(() => { tip.visible = false; }, 150);
+}
+
+function cancelHide() {
+  clearTimeout(tipTimeout);
+}
+
 onMounted(async () => {
   try {
     const res = await fetch("/schema.json");
@@ -20,16 +60,12 @@ onMounted(async () => {
     for (const [typeName, typeInfo] of Object.entries(schema)) {
       for (const [className, classInfo] of Object.entries(typeInfo.classes || {})) {
         const key = `${typeName}::${className}`;
-        const parts = [];
-        if (classInfo.description && classInfo.description !== className) {
-          parts.push(classInfo.description);
-        }
-        if (classInfo.source) parts.push(classInfo.source);
-        const paramNames = Object.keys(classInfo.params || {});
-        if (paramNames.length) {
-          parts.push("params: " + paramNames.join(", "));
-        }
-        map[key] = parts.join("\n");
+        map[key] = {
+          desc: classInfo.description && classInfo.description !== className
+            ? classInfo.description : "",
+          source: classInfo.source || "",
+          params: classInfo.params || {},
+        };
       }
     }
     schemaMap.value = map;
@@ -39,8 +75,8 @@ onMounted(async () => {
 });
 
 function getTooltip(type, cls) {
-  if (!type || !cls) return "";
-  return schemaMap.value[`${type}::${cls}`] || "";
+  if (!type || !cls) return { desc: "", source: "", params: {} };
+  return schemaMap.value[`${type}::${cls}`] || { desc: "", source: "", params: {} };
 }
 
 function esc(s) {
@@ -71,6 +107,11 @@ function fmtExpr(node) {
   if (c === "FunctionCall") {
     const args = (node.args || []).map(a => fmtExpr(a)).join(", ");
     return `<span class="c-fn">${esc(node.function || "")}</span>(${args})`;
+  }
+  if (c === "MathOp") {
+    const l = node.left ? fmtExpr(node.left) : "0";
+    const r = node.right ? fmtExpr(node.right) : "0";
+    return `(${l} <span class="c-op">${esc(node.op || "+")}</span> ${r})`;
   }
   return esc(JSON.stringify(node).slice(0, 40));
 }
@@ -107,7 +148,6 @@ function typeLabel(val, clsOverride) {
     return fmtVal(val);
   }
   if (val.type && val.class) {
-    // clsOverride: caller already assigned a color for this object block
     const c = clsOverride || "";
     return `<span class="${c}">${esc(val.type)}</span>::<span class="${c}">${esc(val.class)}</span>`;
   }
@@ -118,7 +158,6 @@ function nonMeta(obj) {
   return Object.entries(obj).filter(([k]) => k !== "type" && k !== "class");
 }
 
-// prefix segments: [{text, cls}] — each │ segment retains its source's color.
 function prefixHtml(segments) {
   return segments.map(s =>
     s.cls ? `<span class="${s.cls}">${s.text}</span>` : s.text
@@ -129,8 +168,6 @@ function connHtml(conn, cls) {
   return `<span class="${cls}">${conn}</span>`;
 }
 
-// `blockCls` — color of the parent block (connectors & │ bars use this).
-// `gidx` — global counter; only advances when entering a new object block.
 function build(obj, preSegs, isLast, blockCls, gidx) {
   const lines = [];
   const entries = nonMeta(obj);
@@ -158,10 +195,12 @@ function build(obj, preSegs, isLast, blockCls, gidx) {
 
         if (isObjectNode(item)) {
           const tc = nextColor(gidx);
+          const tinfo = getTooltip(item.type, item.class);
           lines.push({
             cls: tc,
             html: `${cpre}${connHtml(jconn, blockCls)}<span class="${tc}">[${j}]</span> ${typeLabel(item, tc)}`,
-            tooltip: getTooltip(item.type, item.class),
+            tooltip: tinfo.desc, source: tinfo.source, params: tinfo.params,
+            typeName: item.type, className: item.class,
             delay: 4,
           });
           const inner = {};
@@ -179,11 +218,13 @@ function build(obj, preSegs, isLast, blockCls, gidx) {
       }
     } else if (isObjectNode(val)) {
       const tc = nextColor(gidx);
+      const tinfo = getTooltip(val.type, val.class);
       const keySpan = `<span class="${tc}"><b>${esc(key)}</b></span>`;
       lines.push({
         cls: tc,
         html: `${pre}${connHtml(conn, blockCls)}${keySpan} ${typeLabel(val, tc)}`,
-        tooltip: getTooltip(val.type, val.class),
+        tooltip: tinfo.desc, source: tinfo.source, params: tinfo.params,
+        typeName: val.type, className: val.class,
         delay: 8,
       });
       const inner = {};
@@ -211,7 +252,13 @@ const lines = computed(() => {
     if (k === "type" || k === "class") continue;
     inner[k] = v;
   }
-  return [{ cls: rootCls, html: rootHtml, tooltip: getTooltip(props.config.type, props.config.class), delay: 0 }, ...build(inner, [], true, rootCls, gidx)];
+  const rootTip = getTooltip(props.config.type, props.config.class);
+  return [{
+    cls: rootCls, html: rootHtml,
+    tooltip: rootTip.desc, source: rootTip.source, params: rootTip.params,
+    typeName: props.config.type, className: props.config.class,
+    delay: 0,
+  }, ...build(inner, [], true, rootCls, gidx)];
 });
 </script>
 
@@ -221,9 +268,38 @@ const lines = computed(() => {
       v-for="(line, i) in lines"
       :key="'l' + i"
       :class="['tree-line', line.cls]"
-      :title="line.tooltip || ''"
       v-html="' ' + line.html"
+      @mouseenter="showTip($event, line)"
+      @mousemove="moveTip"
+      @mouseleave="hideTip"
     ></div>
+
+    <!-- Floating tooltip panel -->
+    <Teleport to="body">
+      <div
+        v-if="tip.visible"
+        class="tree-tip"
+        :style="{ left: tip.x + 'px', top: tip.y + 'px' }"
+        @mouseenter="cancelHide"
+        @mouseleave="hideTip"
+      >
+        <div class="tip-header">
+          <span class="g">{{ tip.typeName }}</span>::<span class="g">{{ tip.className }}</span>
+        </div>
+        <div class="tip-desc dim" v-if="tip.tooltip">{{ tip.tooltip }}</div>
+        <div class="tip-source dim" v-if="tip.source">{{ tip.source }}</div>
+        <div class="tip-params" v-if="Object.keys(tip.params).length">
+          <div class="g">params</div>
+          <div v-for="(p, pname) in tip.params" :key="pname" class="dim">
+            <span class="a">{{ pname }}</span>: {{ p.type || "?" }}
+            <template v-if="p.default !== null && p.default !== undefined">
+              = {{ p.default }}
+            </template>
+            <span class="dim"> — {{ p.description }}</span>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </TerminalCard>
   <TerminalCard :title="title" :min-width="40" :collapsible="true" v-else>
     <div class="dim"><TypedSpan text=" (no config loaded)" :speed="TYPE.fast" /></div>
@@ -235,5 +311,44 @@ const lines = computed(() => {
   white-space: pre;
   line-height: var(--lh-body);
   font-size: var(--fs-base);
+  cursor: default;
+}
+.tree-line:hover {
+  background: rgba(79,232,124,0.04);
+}
+</style>
+
+<style>
+/* Not scoped — teleported to body */
+.tree-tip {
+  position: fixed;
+  z-index: 200;
+  max-width: 52ch;
+  background: var(--surface-2);
+  border: var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 8px rgba(79,232,124,0.08);
+  pointer-events: auto;
+}
+.tip-header {
+  font-size: var(--fs-base);
+  margin-bottom: var(--sp-xxs);
+}
+.tip-desc {
+  margin-bottom: var(--sp-xxs);
+}
+.tip-source {
+  font-size: var(--fs-xs);
+  margin-bottom: var(--sp-xs);
+}
+.tip-params {
+  margin-top: var(--sp-xxs);
+}
+.tip-params .g {
+  margin-bottom: var(--sp-xxs);
 }
 </style>

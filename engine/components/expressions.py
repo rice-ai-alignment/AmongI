@@ -64,3 +64,34 @@ class FunctionCall(Expression):
         return context.call(self.function, resolved_args)
     def description(self) -> str:
         return f"call {self.function}"
+
+
+_MATH_OPS = {
+    "+": lambda a, b: a + b,
+    "-": lambda a, b: a - b,
+    "*": lambda a, b: a * b,
+    "/": lambda a, b: a / b if b != 0 else 0,
+    "%": lambda a, b: a % b if b != 0 else 0,
+}
+
+
+class MathOp(Expression):
+    """Binary math operation on two expressions.
+
+    ``op`` is one of + - * / %.
+    ``left`` and ``right`` are sub-expressions evaluated before the operation.
+    """
+    params = {
+        "op": Param(str, "+", "Operator: + - * / %"),
+        "left": Param(None, None, "Left-hand expression"),
+        "right": Param(None, None, "Right-hand expression"),
+    }
+    def evaluate(self, context) -> object:
+        fn = _MATH_OPS.get(self.op)
+        if fn is None:
+            raise ValueError(f"Unknown math operator: {self.op!r}")
+        left_val = self.left.evaluate(context) if isinstance(self.left, Expression) else (self.left or 0)
+        right_val = self.right.evaluate(context) if isinstance(self.right, Expression) else (self.right or 0)
+        return fn(left_val, right_val)
+    def description(self) -> str:
+        return f"({self.left or 0} {self.op} {self.right or 0})"
