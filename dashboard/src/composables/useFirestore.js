@@ -313,9 +313,10 @@ function watchJobsForExperiment(studyId, expCode) {
         jobs.value = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       },
       err => {
-        // Index or rules may not exist yet — silently ignore
-        if (!err.message?.includes?.("permission") && !err.message?.includes?.("index")) {
-          console.warn("[dashboard] Job watch error:", err.message);
+        // Log the full error so the user can create the required index
+        console.warn("[dashboard] Job watch error:", err.message || err);
+        if (err.message && err.message.includes("index")) {
+          console.warn("[dashboard] Create the required Firestore index:", err.message);
         }
         jobs.value = [];
       }
@@ -327,13 +328,12 @@ function unwatchJobs() {
   if (_jobsUnsub) { _jobsUnsub(); _jobsUnsub = null; }
 }
 
-async function queueJob({ studyId, experimentCode, config, maxGames }) {
+async function queueJob({ studyId, experimentCode, maxGames }) {
   const d = db();
   if (!d || !user.value) throw new Error("Not authenticated");
   const docRef = await d.collection("jobs").add({
     study_id: studyId,
     experiment_code: experimentCode,
-    config: config || {},
     max_games: maxGames || 1,
     created_by: user.value.uid,
     created_at: firebase.firestore.FieldValue.serverTimestamp(),
@@ -349,6 +349,15 @@ async function queueJob({ studyId, experimentCode, config, maxGames }) {
 }
 
 // ── Config from Firestore ───────────────────────────────────────────
+async function saveExperimentConfig(studyId, expId, configObj) {
+  const d = db();
+  if (!d || !user.value) throw new Error("Not authenticated");
+  const ref = d.collection(COLLECTION).doc(studyId)
+    .collection("experiments").doc(expId);
+  await ref.set({ config: configObj }, { merge: true });
+  console.log("[dashboard] Config saved to", `${COLLECTION}/${studyId}/experiments/${expId}`);
+}
+
 async function loadExperimentConfig(studyId, expId) {
   const d = db();
   if (!d) return null;
@@ -385,6 +394,6 @@ export function useFirestore() {
     // jobs
     jobs, watchJobsForExperiment, unwatchJobs, queueJob,
     // config
-    loadExperimentConfig,
+    loadExperimentConfig, saveExperimentConfig,
   };
 }

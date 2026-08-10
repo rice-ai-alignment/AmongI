@@ -257,7 +257,8 @@ class GameEngine:
 
     @property
     def game_index(self) -> int:
-        return self._game_index
+        """0-based game index (0 = first game)."""
+        return max(0, self._game_index - 1)
 
     @property
     def game_kills(self) -> int:
@@ -279,7 +280,8 @@ class GameEngine:
 
     def check_win_condition(self) -> dict:
         """Check win conditions — delegates to configured WinConditions."""
-        for wc in self.win_conditions:
+        conditions = self.game.win_conditions if self.game else self.win_conditions
+        for wc in conditions:
             result = wc.check(self)
             if result and result.get("winner"):
                 return {"game_over": True, "winner": result["winner"]}
@@ -331,7 +333,7 @@ class GameEngine:
             "reason": {"type": "string", "description": "Logic behind the move."},
         }
         # Attack: list valid target names within range so the agent can choose.
-        phase = self.voting_phase if is_voting else self.free_roam_phase
+        phase = self.game.current_phase if self.game else (self.voting_phase if is_voting else self.free_roam_phase)
         if phase and phase.has_action_for(player.agent_type_name, "attack"):
             targets = self._get_attackable_targets(player)
             if targets:
@@ -486,6 +488,13 @@ class GameEngine:
             if next_phase:
                 phase.on_end(self)
                 next_phase.on_start(self)
+                # Update engine phase for the main game loop
+                if getattr(next_phase, '__class__', None) and \
+                   next_phase.__class__.__name__ == 'VotingPhase':
+                    self.phase = Phase.VOTING
+                    self._state_timer = getattr(next_phase, 'timeout', self.cfg.vote_timeout)
+                else:
+                    self.phase = Phase.PLAYING
 
     def _default_playing_action(self, player: PlayerState, decision: dict) -> list:
         """Basic move + chat when no game phase is configured."""
@@ -670,6 +679,15 @@ class GameEngine:
         await self._resume_playing()
 
     async def _resume_playing(self):
+        # Transition game back to play phase if one is loaded
+        if self.game:
+            phase = self.game.current_phase
+            if phase:
+                trigger = {"type": "vote_end"}
+                next_phase = self.game.transition(self, phase, trigger)
+                if next_phase:
+                    phase.on_end(self)
+                    next_phase.on_start(self)
         self.phase = Phase.PLAYING
         self._bump_phase()
         self.vote_choices.clear()
@@ -714,6 +732,14 @@ class GameEngine:
 
         # Delegate to game.setup() if a game is loaded
         if self.game and hasattr(self.game, 'setup'):
+            # Initialise player context managers before game.setup() runs
+            for pid in active_ids:
+                p = self.players[pid]
+                if p.ctx is None:
+                    p.ctx = ContextManager(p.name)
+                p.ctx.set_constant("system", BASE_PROMPT)
+                p.agent.set_intro(BASE_PROMPT)
+                p.agent.tokens.reset()
             self.game.setup(self)
             return
 
@@ -848,6 +874,13 @@ class GameEngine:
                 elif self.phase in (Phase.STARTING, Phase.VOTING):
                     self._state_timer -= dt
 
+                # Check win conditions every tick regardless of phase
+                if self.phase in (Phase.PLAYING, Phase.VOTING):
+                    result = self.check_win_condition()
+                    if result["game_over"]:
+                        await self._end_game(result["winner"])
+                        break
+
                 if self.phase == Phase.STARTING:
                     if self._state_timer <= 0:
                         limit = max_games
@@ -934,6 +967,12 @@ class GameEngine:
                     print(f"Voiding stale response from {p.name}")
                 continue
             await self._process_playing_action(p, decision)
+
+        # Check win conditions after all players have acted
+        if self.phase == Phase.PLAYING:
+            result = self.check_win_condition()
+            if result["game_over"]:
+                await self._end_game(result["winner"])
 
     async def _tick_voting(self):
         active = self._get_active_players()

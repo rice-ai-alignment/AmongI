@@ -1,16 +1,17 @@
 <script setup>
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted, reactive } from "vue";
 import { useFirestore } from "../composables/useFirestore.js";
 import { useTypewriter } from "../composables/useTypewriter.js";
 import { TYPE } from "../composables/typeSettings.js";
 import TypedSpan from "./TypedSpan.vue";
 import ConfirmPopup from "./ConfirmPopup.vue";
+import FormPopup from "./FormPopup.vue";
 import StaggerBlock from "./StaggerBlock.vue";
 
 const {
   user, studies, activeStudyId, loadStudies, createStudy, archiveStudy,
   experiments, activeExperimentId, studyExperiments, createExperiment, archiveExperiment,
-  loadAllExperiments, loadExperiments, fetchData, setDescription,
+  loadAllExperiments, loadExperiments, fetchData, setDescription, saveExperimentConfig,
 } = useFirestore();
 
 const emit = defineEmits(["browsing"]);
@@ -22,6 +23,51 @@ const creating = ref(false);
 const confirmArchive = ref(null); // { type: 'study'|'experiment', id, name }
 const studiesLabel = ref(null);
 const sideLabel = ref(null);
+
+// ── Popup state ──────────────────────────────────────────────────────
+const createStudyPopup = ref(false);
+const createExperimentPopup = ref(false);
+const studyFields = [
+  { key: "name", label: "name", placeholder: "my-study" },
+  { key: "description", label: "desc", placeholder: "optional description", required: false },
+];
+// ── Example configs for template dropdown ─────────────────────────────
+const exampleConfigs = ref([]);  // [{name, filename, json}]
+
+onMounted(async () => {
+  const files = [
+    { name: "basic (crew + imposter, 5 games)", file: "/sample_data/example_basic.json" },
+    { name: "small kill (fast kills)", file: "/sample_data/example_small_kill.json" },
+    { name: "timer (short rounds)", file: "/sample_data/example_timer.json" },
+  ];
+  const loaded = [];
+  for (const f of files) {
+    try {
+      const res = await fetch(f.file);
+      if (res.ok) {
+        const json = await res.json();
+        loaded.push({ name: f.name, filename: f.file.split("/").pop(), json });
+      }
+    } catch (e) { /* skip unavailable files */ }
+  }
+  exampleConfigs.value = loaded;
+});
+
+const experimentTemplate = ref("blank");
+const templateOptions = computed(() => {
+  const opts = [{ value: "blank", label: "(blank — configure later)" }];
+  for (const ex of exampleConfigs.value) {
+    opts.push({ value: ex.filename, label: ex.name });
+  }
+  return opts;
+});
+
+const experimentFields = computed(() => [
+  { key: "name", label: "name", placeholder: "baseline-run" },
+  { key: "description", label: "desc", placeholder: "optional description", required: false },
+  { key: "template", label: "template", type: "select",
+    options: templateOptions.value, default: "blank" },
+]);
 
 useTypewriter(studiesLabel, "┌─ studies ─┐", { typeSpeed: TYPE.normal, startDelay: 100 });
 
@@ -52,17 +98,58 @@ async function runCmd(raw) {
   } else if (c === "cd" && a === "..") {
     activeStudyId.value = null; activeExperimentId.value = null;
     mode.value = "studies"; emit("browsing", true);
-  } else if ((c === "create" || c === "new") && user.value) {
-    const rest = args.slice(1).join(" ");
-    if ((args[1] === "study" || args[1] === "s") && rest !== "study") {
-      const name = args.slice(2).join(" ");
-      if (name) { creating.value = true; const id = await createStudy(name); creating.value = false; if (id) { activeStudyId.value = id; mode.value = "experiments"; emit("browsing", true); await loadAllExperiments(); } }
-    } else if ((args[1] === "experiment" || args[1] === "exp" || args[1] === "e") && activeStudyId.value && rest !== "experiment") {
-      const name = args.slice(2).join(" ");
-      if (name) { creating.value = true; const id = await createExperiment(name); creating.value = false; if (id) { activeExperimentId.value = id; mode.value = "viewing"; emit("browsing", false); await loadAllExperiments(); } }
-    }
   }
   input.value = "";
+}
+
+// ── Popup handlers ───────────────────────────────────────────────────
+
+async function onConfirmStudy(form) {
+  createStudyPopup.value = false;
+  const name = form.name.trim();
+  if (!name) return;
+  creating.value = true;
+  const id = await createStudy(name);
+  creating.value = false;
+  if (id) {
+    // Set description if provided
+    if (form.description.trim()) {
+      await setDescription("study", id, null, form.description.trim());
+      await loadStudies();
+    }
+    activeStudyId.value = id;
+    mode.value = "experiments";
+    emit("browsing", true);
+    await loadAllExperiments();
+  }
+}
+
+async function onConfirmExperiment(form) {
+  createExperimentPopup.value = false;
+  const name = form.name.trim();
+  if (!name) return;
+  creating.value = true;
+  const id = await createExperiment(name);
+  creating.value = false;
+  if (id) {
+    if (form.description.trim()) {
+      await setDescription("experiment", activeStudyId.value, id, form.description.trim());
+      await loadExperiments();
+    }
+    // Save template config if one was selected
+    if (form.template && form.template !== "blank") {
+      const tpl = exampleConfigs.value.find(e => e.filename === form.template);
+      if (tpl && tpl.json) {
+        try {
+          await saveExperimentConfig(activeStudyId.value, id, tpl.json);
+        } catch (e) { console.warn("Failed to save template config:", e); }
+      }
+    }
+    activeExperimentId.value = id;
+    mode.value = "viewing";
+    emit("browsing", false);
+    await loadAllExperiments();
+  }
 }
 
 async function selectStudy(id) {
@@ -102,7 +189,7 @@ watch(activeStudyId, (id) => {
     <div class="box-label" ref="studiesLabel">┌─ studies ─┐</div>
     <div class="card-grid">
       <div v-for="s in studies" :key="s.id" class="ascii-card" @click="selectStudy(s.id)">
-        <div class="card-top">┌──────────────────────────────────┐</div>
+        <div class="card-top">┌────────────────────────────────────────────────┐</div>
         <div class="card-row">│ <TypedSpan class="card-name" :text="s.name" :speed="TYPE.slow" /> <span v-if="user" class="archive-btn" @click.stop="confirmArchive = { type: 'study', id: s.id, name: s.name }" title="archive">[x]</span></div>
         <div class="card-row dim desc" @click.stop>
           │ <span v-if="editingDesc !== s.id" @click="editingDesc = s.id; descInput = s.description || ''">{{ s.description || '+ description' }}</span>
@@ -110,12 +197,12 @@ watch(activeStudyId, (id) => {
         </div>
         <div class="card-row dim exp-in-card" v-for="e in (studyExperiments[s.id] || []).slice(0, 3)" :key="e.id" @click.stop="activeStudyId = s.id; selectExperiment(e.id)">│   ▸ <TypedSpan :text="e.name" :speed="TYPE.slow" /></div>
         <div class="card-row dim" v-if="!(studyExperiments[s.id]||[]).length">│   empty</div>
-        <div class="card-bot">└──────────────────────────────────┘</div>
+        <div class="card-bot">└────────────────────────────────────────────────┘</div>
       </div>
-      <div class="ascii-card card-new" v-if="user">
-        <div class="card-top">┌─ new ───────────────────────────┐</div>
-        <div class="card-row">│ $ <input v-model="input" @keyup.enter="runCmd('create study '+input)" placeholder="create study <name>" class="card-inp" /></div>
-        <div class="card-bot">└──────────────────────────────────┘</div>
+      <div class="ascii-card card-new" v-if="user" @click="createStudyPopup = true">
+        <div class="card-top">┌─ new ─────────────────────────────────────────┐</div>
+        <div class="card-row dim">│   [ + new study ]</div>
+        <div class="card-bot">└────────────────────────────────────────────────┘</div>
       </div>
     </div>
     <div class="cmd-line hint" v-if="!studies.length && !user">sign in to create the first study</div>
@@ -131,17 +218,20 @@ watch(activeStudyId, (id) => {
         class="exp-item"
         :class="{ active: e.id === activeExperimentId }"
         @click="selectExperiment(e.id)"
-      > <TypedSpan :text="e.name" :speed="TYPE.slow" /> <span v-if="user" class="archive-btn" @click.stop="confirmArchive = { type: 'experiment', id: e.id, name: e.name }" title="archive">[x]</span></div>
+      >
+        <span class="exp-name"><TypedSpan :text="e.name" :speed="TYPE.slow" /></span>
+        <span v-if="user" class="archive-btn" @click.stop="confirmArchive = { type: 'experiment', id: e.id, name: e.name }" title="archive">[x]</span>
+      </div>
       <div class="exp-item dim" v-if="!experiments.length">  (empty)</div>
     </StaggerBlock>
     <div class="cmd-line" style="margin-top:var(--sp-xs)" v-if="user">
       <span v-if="creating">creating...</span>
-      <span v-else>$ <input v-model="input" @keyup.enter="runCmd('create experiment '+input)" :placeholder="'create experiment name'" class="side-inp" /></span>
+      <span v-else class="new-link" @click="createExperimentPopup = true">$ [ + new experiment ]</span>
     </div>
     <div class="cmd-line dim back-link" @click="backToStudies">$ cd ..</div>
   </div>
 
-  <!-- Archive confirmation popup (reusable component) -->
+  <!-- Archive confirmation popup -->
   <ConfirmPopup
     v-if="confirmArchive"
     :message="'archive ' + confirmArchive.name + '?'"
@@ -157,6 +247,26 @@ watch(activeStudyId, (id) => {
       }
       confirmArchive = null;
     }"
+  />
+
+  <!-- Create study popup -->
+  <FormPopup
+    v-if="createStudyPopup"
+    title="new study"
+    :fields="studyFields"
+    confirmText="[ create ]"
+    @confirm="onConfirmStudy"
+    @cancel="createStudyPopup = false"
+  />
+
+  <!-- Create experiment popup -->
+  <FormPopup
+    v-if="createExperimentPopup"
+    title="new experiment"
+    :fields="experimentFields"
+    confirmText="[ create ]"
+    @confirm="onConfirmExperiment"
+    @cancel="createExperimentPopup = false"
   />
 </template>
 
@@ -204,7 +314,7 @@ watch(activeStudyId, (id) => {
 
 /* ── Side panel ────────────────────────────────────────────────── */
 .side-panel {
-  width: 30ch; flex-shrink: 0;
+  width: 34ch; flex-shrink: 0;
   border-right: 2px solid var(--green); padding-right: 1ch;
 }
 .side-list { margin: var(--sp-xs) 0; }
@@ -212,9 +322,11 @@ watch(activeStudyId, (id) => {
   font-size: var(--fs-ui); padding: var(--sp-xxs) 0; cursor: pointer;
   color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: all 0.15s ease;
+  display: flex; align-items: baseline; gap: var(--sp-xxs);
 }
 .exp-item:hover { color: var(--text); padding-left: var(--sp-xxs); }
 .exp-item.active { color: var(--green); text-shadow: 0 0 5px rgba(79,232,124,0.3); }
+.exp-name { flex-shrink: 0; }
 .side-inp {
   background: transparent; border: none; border-bottom: var(--border-subtle);
   color: var(--text); font: var(--fs-ui) var(--font-mono); outline: none; width: 24ch;
@@ -223,12 +335,14 @@ watch(activeStudyId, (id) => {
 .cmd-line { font-size: var(--fs-ui); padding: 1px 0; }
 .back-link { cursor: pointer; margin-top: var(--sp-sm); }
 .back-link:hover { color: var(--green); }
+.new-link { cursor: pointer; color: var(--text-dim); }
+.new-link:hover { color: var(--green); }
 .archive-btn {
   color: var(--text-dim); font-size: var(--fs-xs); cursor: pointer;
-  opacity: 0; transition: opacity 0.15s;
+  opacity: 0; transition: opacity 0.15s; flex-shrink: 0;
 }
 .ascii-card:hover .archive-btn, .exp-item:hover .archive-btn { opacity: 0.6; }
 .archive-btn:hover { opacity: 1 !important; color: var(--red); }
-.desc { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.desc { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .creating { color: var(--amber); animation: pulse 1s ease-in-out infinite; }
 </style>

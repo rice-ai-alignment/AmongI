@@ -86,7 +86,8 @@ async def main():
         try:
             from google.cloud import firestore
             db = firestore.client()
-            col = os.getenv("FIRESTORE_COLLECTION", "studies")
+            from bridge_server import STUDIES_COLLECTION
+            col = STUDIES_COLLECTION
             exp_ref = db.collection(col).document(args.study).collection("experiments").document(args.experiment)
             exp_doc = exp_ref.get()
             if not exp_doc.exists:
@@ -106,8 +107,9 @@ async def main():
         from experiment import build_experiment
         exp = build_experiment(os.path.join(base, args.config))
 
+    agent_types = []
     if exp:
-        config, free_roam_phase, voting_phase, win_conditions, position_mode, map_data = \
+        config, free_roam_phase, voting_phase, win_conditions, position_mode, map_data, agent_types = \
             experiment_to_runtime(exp)
     else:
         config = GameConfig()
@@ -134,8 +136,9 @@ async def main():
                         win_conditions=win_conditions,
                         position_mode=position_mode)
     if exp:
-        engine._agent_types = exp.engine.agents.types
+        engine._agent_types = agent_types
         engine._experiment_config = exp.to_json()
+        engine.game = exp
 
     try:
         summary = await engine.run(max_games=args.max_games)

@@ -16,11 +16,11 @@ const showSetup = ref(false);
 const COLUMNS = [
   { key: "name", header: "NAME" },
   { key: "status", header: "STATUS" },
+  { key: "current_job", header: "JOB" },
   { key: "cpu", header: "CPU%", align: "right" },
   { key: "mem", header: "MEM%", align: "right" },
   { key: "gpu", header: "GPU%", align: "right" },
-  { key: "jobs", header: "JOBS", align: "right" },
-  { key: "funnel", header: "FUNNEL" },
+  { key: "jobs", header: "DONE", align: "right" },
   { key: "seen", header: "SEEN" },
 ];
 
@@ -36,11 +36,15 @@ const composeYml = `# 1. Place firebase-key.json in engine/
 function formatCell(key, val, row) {
   if (key === "name") return { text: row.name || row.id || "?", bold: true };
   if (key === "status") return _statusCell(row);
+  if (key === "current_job") {
+    const jid = row.current_job_id;
+    if (!jid) return { text: "-" };
+    return { text: jid.length > 12 ? jid.slice(0, 12) + "..." : jid, cls: "a" };
+  }
   if (key === "cpu") return { text: row.cpu_percent != null ? String(Math.round(row.cpu_percent)) : "-" };
   if (key === "mem") return { text: row.memory_percent != null ? String(Math.round(row.memory_percent)) : "-" };
   if (key === "gpu") return { text: row.gpu_percent != null ? String(Math.round(row.gpu_percent)) : "-" };
   if (key === "jobs") return { text: String(row.jobs_completed || 0) };
-  if (key === "funnel") return { text: row.funnel_url ? "yes" : "-" };
   if (key === "seen") return { text: _ageText(row) };
   return { text: String(val ?? "-") };
 }
@@ -78,7 +82,7 @@ function _ageText(row) {
       :columns="COLUMNS"
       :rows="servers"
       :formatCell="formatCell"
-      :row-delay="40"
+      no-type
     />
     <div v-else class="dim">(no servers connected)</div>
 

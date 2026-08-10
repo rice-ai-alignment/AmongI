@@ -1,42 +1,100 @@
-"""experiment_runtime.py — Convert an Experiment component tree to runtime objects.
+"""experiment_runtime.py — Convert a BaseGame (AmongUsGame, etc.) to runtime objects.
 
 Shared by run.py and server_handler.py to avoid duplicating the
-config → GameConfig/phase/map wiring.
+config -> GameConfig/phase/map wiring.
 """
 
 from __future__ import annotations
 
-from engine import GameConfig
-from components.maps import SquareMap
+from dataclasses import dataclass, field
+
+
+@dataclass
+class _RuntimeConfig:
+    """Minimal config bag passed to GameEngine — mirrors engine.GameConfig
+    without importing engine.py (which pulls in openai, etc.)."""
+    kill_distance: int = 3
+    chat_distance: int = 10000
+    witness_distance: int = 5
+    start_countdown: float = 5.0
+    game_max_length: float = 600.0
+    vote_timeout: float = 30.0
+    min_vote_time: float = 15.0
+    visibility_radius: int = 5
+    agent_tick_interval: float = 3.0
+    near_timeout_threshold: float = 5.0
+    player_count: int = 5
+    token_limit: int = 100000
+    agent_names: list[str] = field(default_factory=lambda: [
+        "Red", "Blue", "Green", "Pink", "Orange",
+        "Yellow", "Black", "White", "Purple", "Brown",
+    ])
+    agent_colors: list[str] = field(default_factory=lambda: [
+        "#C51111", "#132ED2", "#117F2D", "#ED54BB", "#EF7D0E",
+        "#C8CD00", "#3F474E", "#D85A30", "#378ADD", "#1D9E75",
+    ])
+
+
+def _get_square_map(size=16):
+    """Lazy-import SquareMap."""
+    from components.maps import SquareMap
+    return SquareMap(size)
 
 
 def experiment_to_runtime(exp):
-    """Convert an Experiment tree into (GameConfig, free_roam, voting,
-    win_conditions, position_mode, map_data).
+    """Convert a BaseGame (e.g. AmongUsGame) into runtime objects.
 
-    The map comes from the position mode component (e.g. TilePosition.map).
-    Returns a tuple of (config, free_roam_phase, voting_phase, win_conditions, position_mode, map_data).
+    Returns a tuple of (config, play_phase, voting_phase,
+    win_conditions, position_mode, map_data, agent_types).
     """
-    eng = exp.engine
-    config = GameConfig()
-    config.player_count = eng.agents.total
-    config.kill_distance = eng.kill_distance
-    config.visibility_radius = eng.visibility_radius
-    config.witness_distance = eng.witness_distance
-    if hasattr(eng, "token_limit"):
-        config.token_limit = eng.token_limit
-    fr = exp.free_roam
-    config.agent_tick_interval = fr.tick_interval
-    config.vote_timeout = exp.voting.timeout
-    config.min_vote_time = exp.voting.min_time
-    free_roam_phase = exp.free_roam
-    voting_phase = exp.voting
-    win_conditions = eng.win_conditions or []
+    from games.base import BaseGame
 
-    # Position mode owns the map — extract from the free-roam phase config
-    position_mode = exp.free_roam.position_mode
-    map_data = position_mode.map if position_mode else None
+    if not isinstance(exp, BaseGame):
+        raise TypeError(f"Expected a BaseGame, got {type(exp).__name__}")
+
+    config = _RuntimeConfig()
+
+    # Agent types
+    agent_types = []
+    if exp.agents and hasattr(exp.agents, "types"):
+        agent_types = exp.agents.types
+        config.player_count = sum(getattr(t, "count", 1) for t in agent_types)
+
+    # Phases — first is play, second is voting (if present)
+    play_phase = None
+    voting_phase = None
+    for p in (exp.phases or []):
+        if play_phase is None:
+            play_phase = p
+        elif voting_phase is None:
+            voting_phase = p
+
+    if play_phase:
+        config.agent_tick_interval = getattr(play_phase, "tick_interval", 3.0)
+
+    if voting_phase:
+        config.vote_timeout = getattr(voting_phase, "timeout", 30.0)
+        config.min_vote_time = getattr(voting_phase, "min_time", 10.0)
+
+    win_conditions = exp.win_conditions or []
+
+    # Position mode — may be on play_phase or an action within it
+    position_mode = None
+    if play_phase:
+        position_mode = getattr(play_phase, "position_mode", None)
+        if not position_mode:
+            for action in (play_phase.actions or []):
+                pm = getattr(action, "position_mode", None)
+                if pm:
+                    position_mode = pm
+                    break
+
+    # Map — from game.map or position_mode
+    map_data = exp.map
+    if map_data is None and position_mode and hasattr(position_mode, "map"):
+        map_data = position_mode.map
     if map_data is None:
-        map_data = SquareMap(16)
+        map_data = _get_square_map(16)
 
-    return (config, free_roam_phase, voting_phase, win_conditions, position_mode, map_data)
+    return (config, play_phase, voting_phase, win_conditions, position_mode,
+            map_data, agent_types)

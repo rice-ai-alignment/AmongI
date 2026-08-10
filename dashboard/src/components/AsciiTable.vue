@@ -27,6 +27,8 @@ const props = defineProps({
   /** Milliseconds delay per row for staggered typing. */
   rowDelay: { type: Number, default: 120 },
   collapsible: { type: Boolean, default: true },
+  /** Skip TypedSpan for data rows — renders instantly (for live-updating data). */
+  noType: { type: Boolean, default: false },
 });
 
 const speed = computed(() => props.typeSpeed || TYPE.fast);
@@ -100,7 +102,8 @@ const table = computed(() => {
         <TypedSpan :text="table.header" :speed="speed + 5" />
       </div>
       <div v-for="r in table.rows" :key="r.delay">
-        <TypedSpan :text="r.line" :speed="speed" :delay="r.delay" />
+        <TypedSpan v-if="!noType" :text="r.line" :speed="speed" :delay="r.delay" />
+        <span v-else v-html="' ' + r.line"></span>
       </div>
     </div>
     <div v-else>

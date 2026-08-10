@@ -27,7 +27,7 @@ try:
 except ImportError:
     HAS_FIRESTORE = False
 
-FIRESTORE_COLLECTION = os.getenv("FIRESTORE_COLLECTION", "studies")
+STUDIES_COLLECTION = os.getenv("FIRESTORE_COLLECTION", "studies")
 STUDY_ID = os.getenv("STUDY_ID", "")
 EXPERIMENT_CODE = os.getenv("EXPERIMENT_CODE", "")
 FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED_PATH", "firebase-key.json")
@@ -48,7 +48,7 @@ def check_study_experiment(study: str, experiment: str) -> bool:
         return False
     try:
         db = firestore.client()
-        study_ref = db.collection(FIRESTORE_COLLECTION).document(study)
+        study_ref = db.collection(STUDIES_COLLECTION).document(study)
         study_doc = study_ref.get()
         if not study_doc.exists:
             print(f"[Bridge] Study {study!r} does not exist in Firestore")
@@ -193,11 +193,11 @@ class LogStore:
         study = os.getenv("STUDY_ID", "") or STUDY_ID
         exp = os.getenv("EXPERIMENT_CODE", "") or EXPERIMENT_CODE
         if study and exp:
-            return db.collection(FIRESTORE_COLLECTION).document(study) \
+            return db.collection(STUDIES_COLLECTION).document(study) \
                      .collection("experiments").document(exp)
         # Fallback: session-based temp name
         sid = self.session_id or "unknown"
-        return db.collection(FIRESTORE_COLLECTION).document(sid.replace("SESSION-", "exp-"))
+        return db.collection(STUDIES_COLLECTION).document(sid.replace("SESSION-", "exp-"))
 
     def _push_session_config(self):
         """Push session-level config.json to the experiment doc."""

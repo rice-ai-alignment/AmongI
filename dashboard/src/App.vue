@@ -8,11 +8,11 @@ import TilesSection from "./components/TilesSection.vue";
 import WinChart from "./components/WinChart.vue";
 import PlayerTable from "./components/PlayerTable.vue";
 import MatchFeed from "./components/MatchFeed.vue";
-import ConfigViewer from "./components/ConfigViewer.vue";
 import ConfigCard from "./components/ConfigCard.vue";
 import StaggerBlock from "./components/StaggerBlock.vue";
 import ServerList from "./components/ServerList.vue";
 import JobStatus from "./components/JobStatus.vue";
+import DocsPanel from "./components/DocsPanel.vue";
 import CopyButton from "./components/CopyButton.vue";
 
 const {
@@ -23,16 +23,16 @@ const {
   servers, startServerWatch, stopServerWatch,
   canRunExperiments, loadUserPermissions,
   jobs, watchJobsForExperiment, unwatchJobs, queueJob,
-  loadExperimentConfig,
+  loadExperimentConfig, saveExperimentConfig,
 } = useFirestore();
 
 const browsing = ref(true);
 const interval = ref(10);
 const activeTab = ref("stats");   // "stats" | "config" | "jobs" (sub-tabs under experiments)
-const navMode = ref("experiments"); // "experiments" | "database" | "servers"
+const navMode = ref("experiments"); // "experiments" | "documentation" | "servers"
 const configJson = ref(null);
 const configLoading = ref(false);
-const maxGames = ref(1);
+const maxGames = computed(() => configJson.value?.game_count || 1);
 let pollTimer = null;
 
 // Copy command for manual runs
@@ -50,7 +50,7 @@ const expName = computed(() => experiments.value.find(e => e.id === activeExperi
 // Titlebar path
 const pathText = computed(() => {
   if (navMode.value === "servers") return "~/servers";
-  if (navMode.value === "database") return "~/database";
+  if (navMode.value === "documentation") return "~/documentation";
   let p = "~/studies";
   if (activeStudyId.value) p += "/" + studyName.value;
   if (activeExperimentId.value) p += "/" + expName.value;
@@ -84,23 +84,49 @@ function switchTab(tab) {
   }
 }
 
-async function runExperiment() {
+const showRunPopup = ref(false);
+const runStatus = ref("idle");   // idle | saving | queuing | done | error
+const runError = ref("");
+const queuedJobId = ref("");
+
+async function openRunPopup() {
+  if (!activeStudyId.value || !activeExperimentId.value) return;
+  runStatus.value = "idle";
+  runError.value = "";
+  queuedJobId.value = "";
+  showRunPopup.value = true;
+}
+
+async function confirmRun() {
   if (!activeStudyId.value || !activeExperimentId.value) return;
   try {
-    // Ensure config is loaded
+    runStatus.value = "saving";
+    // Ensure config is loaded and saved to experiment doc first
     if (!configJson.value) await loadConfig();
-    await queueJob({
+    if (configJson.value) {
+      await saveExperimentConfig(
+        activeStudyId.value, activeExperimentId.value, configJson.value);
+    }
+    runStatus.value = "queuing";
+    const jobId = await queueJob({
       studyId: activeStudyId.value,
       experimentCode: activeExperimentId.value,
-      config: configJson.value || {},
       maxGames: maxGames.value,
     });
-    // Switch to jobs tab to show status
+    queuedJobId.value = jobId;
+    runStatus.value = "done";
     activeTab.value = "jobs";
     watchJobsForExperiment(activeStudyId.value, activeExperimentId.value);
   } catch (e) {
-    console.error("Failed to queue job:", e);
+    runStatus.value = "error";
+    runError.value = e.message || String(e);
   }
+}
+
+function dismissRunPopup() {
+  showRunPopup.value = false;
+  runStatus.value = "idle";
+  runError.value = "";
 }
 
 function restartPolling() {
@@ -115,8 +141,8 @@ function syncURL() {
     window.history.replaceState({}, "", "/servers");
     return;
   }
-  if (navMode.value === "database") {
-    window.history.replaceState({}, "", "/database");
+  if (navMode.value === "documentation") {
+    window.history.replaceState({}, "", "/documentation");
     return;
   }
   let path = "/studies";
@@ -208,7 +234,7 @@ onUnmounted(() => {
       <!-- Top-level nav -->
       <div class="top-nav">
         <span class="tab" :class="{ active: navMode === 'experiments' }" @click="navMode = 'experiments'">[ experiments ]</span>
-        <span class="tab" :class="{ active: navMode === 'database' }" @click="navMode = 'database'">[ database ]</span>
+        <span class="tab" :class="{ active: navMode === 'documentation' }" @click="navMode = 'documentation'">[ documentation ]</span>
         <span class="tab" :class="{ active: navMode === 'servers' }" @click="navMode = 'servers'">[ servers ]</span>
       </div>
 
@@ -242,33 +268,70 @@ onUnmounted(() => {
             <WinChart :stats="stats" />
             <PlayerTable :stats="stats" />
             <MatchFeed :games="games" />
-            <!-- Run experiment -->
+          </StaggerBlock>
+          <StaggerBlock v-if="activeTab === 'config'" :key="'config-' + activeExperimentId">
+            <ConfigCard :config="configJson" title="experiment config" :editable="true" @saved="configJson = $event" />
+          </StaggerBlock>
+          <StaggerBlock v-if="activeTab === 'jobs'" :key="'jobs-' + activeExperimentId">
             <div class="run-bar" v-if="user">
-              <span class="dim">run:</span>
-              <input v-model.number="maxGames" type="number" min="1" max="50" class="term-inp" />
-              <span class="dim">games</span>
-              <button v-if="canRunExperiments" class="run-btn" @click="runExperiment">[ run on server ]</button>
+              <span class="dim">{{ maxGames }} games from config —</span>
+              <button v-if="canRunExperiments" class="run-btn" @click="openRunPopup">[ run on server ]</button>
               <span v-else class="dim" title="requires can_run_experiments permission">(no permission)</span>
               <span class="spacer"></span>
               <CopyButton :command="copyCommand" label="copy command" />
             </div>
-          </StaggerBlock>
-          <StaggerBlock v-if="activeTab === 'config'" :key="'config-' + activeExperimentId">
-            <ConfigCard :config="configJson" title="experiment config" />
-            <ConfigViewer />
-          </StaggerBlock>
-          <StaggerBlock v-if="activeTab === 'jobs'" :key="'jobs-' + activeExperimentId">
+            <div v-else class="dim" style="margin-bottom:var(--sp-xs)">sign in to run experiments</div>
             <JobStatus />
           </StaggerBlock>
         </div>
       </div>
 
-      <!-- Database view (standalone) -->
-      <ConfigViewer v-if="navMode === 'database'" />
+      <!-- Documentation view -->
+      <div class="term-content" v-if="navMode === 'documentation'">
+        <DocsPanel />
+      </div>
 
       <!-- Servers view -->
       <div class="term-content" v-if="navMode === 'servers'">
         <ServerList />
+      </div>
+    </div>
+  </div>
+
+  <!-- Run confirmation popup -->
+  <div v-if="showRunPopup" class="popup-overlay" @click="dismissRunPopup">
+    <div class="popup" @click.stop>
+      <div class="card-box">
+        <div class="box-line box-top">┌─ run experiment ───────────────────────────────────────┐</div>
+        <div class="box-body" style="white-space:normal">
+          <div v-if="runStatus === 'idle' || runStatus === 'saving' || runStatus === 'queuing'">
+            <div><span class="dim">study:</span> {{ activeStudyId }}</div>
+            <div><span class="dim">experiment:</span> {{ activeExperimentId }}</div>
+            <div><span class="dim">games:</span> {{ maxGames }} (from config)</div>
+            <div v-if="runStatus === 'saving'" class="a" style="margin-top:var(--sp-sm)">saving config...</div>
+            <div v-if="runStatus === 'queuing'" class="a" style="margin-top:var(--sp-sm)">queuing job...</div>
+            <div class="popup-acts" style="margin-top:var(--sp-md)">
+              <span class="pop-link" @click="dismissRunPopup">[ cancel ]</span>
+              <span v-if="runStatus === 'idle'" class="pop-link g" @click="confirmRun">[ run ]</span>
+            </div>
+          </div>
+          <div v-else-if="runStatus === 'done'">
+            <div class="g">job queued</div>
+            <div class="dim" style="margin-top:var(--sp-xs)">{{ queuedJobId }}</div>
+            <div class="dim">switched to jobs tab — monitor progress there</div>
+            <div class="popup-acts" style="margin-top:var(--sp-md)">
+              <span class="pop-link g" @click="dismissRunPopup">[ ok ]</span>
+            </div>
+          </div>
+          <div v-else-if="runStatus === 'error'">
+            <div class="r">failed to queue job</div>
+            <div class="dim" style="margin-top:var(--sp-xs)">{{ runError }}</div>
+            <div class="popup-acts" style="margin-top:var(--sp-md)">
+              <span class="pop-link" @click="dismissRunPopup">[ close ]</span>
+            </div>
+          </div>
+        </div>
+        <div class="box-line box-bot">└────────────────────────────────────────────────────────┘</div>
       </div>
     </div>
   </div>
@@ -539,6 +602,17 @@ body {
 .fade-enter-active  { transition: opacity 0.2s ease; }
 .fade-leave-active  { transition: opacity 0.1s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* Popup overlay */
+.popup-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.popup-acts { display: flex; gap: var(--sp-xl); justify-content: center; }
+.pop-link { color: var(--text-dim); cursor: pointer; font-size: var(--fs-ui); }
+.pop-link:hover { color: var(--text); }
+.pop-link.g:hover { color: var(--green); text-shadow: var(--glow-soft); }
+.pop-link.r:hover { color: var(--red); text-shadow: var(--glow-red); }
 
 /* Blinking cursor utility */
 .cursor-end::after {
