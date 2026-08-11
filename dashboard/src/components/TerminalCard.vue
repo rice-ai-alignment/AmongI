@@ -36,14 +36,17 @@ const box = computed(() => {
 
 <style scoped>
 .card-box {
-  background: var(--surface-1); margin-bottom: var(--sp-xs); overflow: hidden;
+  background: var(--surface-1); margin-bottom: var(--sp-xs);
+  overflow-x: auto; overflow-y: hidden;
   box-shadow: var(--glow-subtle);
 }
+.card-box::-webkit-scrollbar { height: var(--scrollbar-w); }
+.card-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-sm); }
 .box-line.clickable { cursor: pointer; }
 .box-body {
   color: var(--text-dim);
   padding: 0 var(--sp-sm) 0 calc(var(--sp-sm) + 1ch);
-  line-height: var(--lh-loose); overflow: hidden; white-space: pre;
+  line-height: var(--lh-loose); overflow: hidden;
 }
 .box-body :deep(.g) { color: var(--green); }
 .box-body :deep(.r) { color: var(--red); }

@@ -11,7 +11,10 @@ import MatchFeed from "./components/MatchFeed.vue";
 import ConfigCard from "./components/ConfigCard.vue";
 import StaggerBlock from "./components/StaggerBlock.vue";
 import ServerList from "./components/ServerList.vue";
+import AllJobsList from "./components/AllJobsList.vue";
+import AdminPanel from "./components/AdminPanel.vue";
 import JobStatus from "./components/JobStatus.vue";
+import ConfirmPopup from "./components/ConfirmPopup.vue";
 import DocsPanel from "./components/DocsPanel.vue";
 import CopyButton from "./components/CopyButton.vue";
 
@@ -21,15 +24,15 @@ const {
   experiments, activeExperimentId, loadExperiments,
   stats, games, statusKind, statusText, lastSync, fetchData,
   servers, startServerWatch, stopServerWatch,
-  canRunExperiments, loadUserPermissions,
+  canRunExperiments, isAdmin, loadUserPermissions,
   jobs, watchJobsForExperiment, unwatchJobs, queueJob,
-  loadExperimentConfig, saveExperimentConfig,
+  loadExperimentConfig, saveExperimentConfig, clearExperimentData,
 } = useFirestore();
 
 const browsing = ref(true);
 const interval = ref(10);
 const activeTab = ref("stats");   // "stats" | "config" | "jobs" (sub-tabs under experiments)
-const navMode = ref("experiments"); // "experiments" | "documentation" | "servers"
+const navMode = ref("experiments"); // "experiments" | "documentation" | "servers" | "admin"
 const configJson = ref(null);
 const configLoading = ref(false);
 const maxGames = computed(() => configJson.value?.game_count || 1);
@@ -51,6 +54,7 @@ const expName = computed(() => experiments.value.find(e => e.id === activeExperi
 const pathText = computed(() => {
   if (navMode.value === "servers") return "~/servers";
   if (navMode.value === "documentation") return "~/documentation";
+  if (navMode.value === "admin") return "~/admin";
   let p = "~/studies";
   if (activeStudyId.value) p += "/" + studyName.value;
   if (activeExperimentId.value) p += "/" + expName.value;
@@ -129,6 +133,44 @@ function dismissRunPopup() {
   runError.value = "";
 }
 
+const showClearPopup = ref(false);
+const clearingData = ref(false);
+const clearCountdown = ref(3);
+const clearReady = ref(false);
+let clearTimer = null;
+
+watch(showClearPopup, (val) => {
+  if (val) {
+    clearCountdown.value = 3;
+    clearReady.value = false;
+    clearTimer = setInterval(() => {
+      clearCountdown.value--;
+      if (clearCountdown.value <= 0) {
+        clearReady.value = true;
+        clearInterval(clearTimer);
+      }
+    }, 1000);
+  } else {
+    clearInterval(clearTimer);
+    clearReady.value = false;
+  }
+});
+async function clearData() {
+  if (!activeStudyId.value || !activeExperimentId.value) return;
+  clearingData.value = true;
+  try {
+    await clearExperimentData(activeStudyId.value, activeExperimentId.value);
+    stats.value = null;
+    games.value = [];
+    await fetchData();
+  } catch (e) {
+    console.error("Clear data failed:", e);
+  } finally {
+    clearingData.value = false;
+    showClearPopup.value = false;
+  }
+}
+
 function restartPolling() {
   if (pollTimer) clearInterval(pollTimer);
   if (interval.value > 0 && activeExperimentId.value) {
@@ -143,6 +185,10 @@ function syncURL() {
   }
   if (navMode.value === "documentation") {
     window.history.replaceState({}, "", "/documentation");
+    return;
+  }
+  if (navMode.value === "admin") {
+    window.history.replaceState({}, "", "/admin");
     return;
   }
   let path = "/studies";
@@ -236,6 +282,7 @@ onUnmounted(() => {
         <span class="tab" :class="{ active: navMode === 'experiments' }" @click="navMode = 'experiments'">[ experiments ]</span>
         <span class="tab" :class="{ active: navMode === 'documentation' }" @click="navMode = 'documentation'">[ documentation ]</span>
         <span class="tab" :class="{ active: navMode === 'servers' }" @click="navMode = 'servers'">[ servers ]</span>
+        <span v-if="isAdmin" class="tab" :class="{ active: navMode === 'admin' }" @click="navMode = 'admin'">[ admin ]</span>
       </div>
 
       <!-- Status line (experiments only) -->
@@ -264,8 +311,14 @@ onUnmounted(() => {
             <span class="tab" :class="{ active: activeTab === 'jobs' }" @click="switchTab('jobs')">[ jobs ]</span>
           </div>
           <StaggerBlock v-if="activeTab === 'stats'" :key="'stats-' + activeExperimentId">
-            <TilesSection :stats="stats" />
-            <WinChart :stats="stats" />
+            <TilesSection :stats="stats" :config="configJson" />
+            <WinChart :stats="stats" :config="configJson" />
+            <div class="clear-bar" v-if="user && stats?.total_games">
+              <span class="dim">data: {{ stats.total_games }} games —</span>
+              <button class="run-btn" @click="showClearPopup = true" :disabled="clearingData">
+                {{ clearingData ? 'clearing...' : '[ clear data ]' }}
+              </button>
+            </div>
             <PlayerTable :stats="stats" />
             <MatchFeed :games="games" />
           </StaggerBlock>
@@ -292,8 +345,14 @@ onUnmounted(() => {
       </div>
 
       <!-- Servers view -->
-      <div class="term-content" v-if="navMode === 'servers'">
+      <div class="term-content" v-if="navMode === 'servers'" style="flex-direction:column; gap:10px;">
         <ServerList />
+        <AllJobsList />
+      </div>
+
+      <!-- Admin view -->
+      <div class="term-content" v-if="navMode === 'admin'">
+        <AdminPanel />
       </div>
     </div>
   </div>
@@ -335,6 +394,20 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+
+  <!-- Clear data confirmation popup -->
+  <ConfirmPopup
+    v-if="showClearPopup"
+    :message="'archive all stats & games for ' + (activeStudyId || '?') + '/' + (activeExperimentId || '?') + '?'"
+    :buttons="[
+      { text: '[ cancel ]', action: 'cancel' },
+      { text: clearingData ? 'clearing...' : clearReady ? '[ clear all data ]' : '[ wait ' + clearCountdown + 's ]', action: 'confirm', danger: true },
+    ]"
+    @action="(act) => {
+      if (act === 'confirm' && clearReady && !clearingData) clearData();
+      else showClearPopup = false;
+    }"
+  />
 </template>
 
 <style>
@@ -491,10 +564,13 @@ body {
 
 /* ── ASCII box system (shared by TerminalCard + global) ───────────── */
 .card-box {
-  background: var(--surface-1); margin-bottom: var(--sp-xs); overflow: hidden;
+  background: var(--surface-1); margin-bottom: var(--sp-xs);
+  overflow-x: auto; overflow-y: hidden;
   box-shadow: 0 0 6px rgba(79,232,124,0.06), inset 0 0 4px rgba(79,232,124,0.03);
   animation: box-expand 0.3s ease backwards;
 }
+.card-box::-webkit-scrollbar { height: var(--scrollbar-w); }
+.card-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-sm); }
 @keyframes box-expand { from { opacity: 0; transform: scaleY(0.8); } to { opacity: 1; transform: scaleY(1); } }
 .card-box:nth-child(1) { animation-delay: 0.05s; }
 .card-box:nth-child(2) { animation-delay: 0.12s; }
@@ -510,7 +586,7 @@ body {
 .box-body {
   color: var(--text-dim); font-size: var(--fs-base);
   padding: 0 var(--sp-sm) 0 calc(var(--sp-sm) + 1ch);
-  line-height: var(--lh-loose); overflow: hidden; white-space: pre;
+  line-height: var(--lh-loose); overflow: hidden;
 }
 .box-body b { color: var(--text); }
 
@@ -561,6 +637,12 @@ body {
 }
 .tab:hover        { color: var(--text); }
 .tab.active       { color: var(--green); text-shadow: 0 0 5px rgba(79,232,124,0.3); }
+
+/* ── Clear data bar ────────────────────────────────────────────────────── */
+.clear-bar {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  padding: var(--sp-xs) var(--sp-md); margin-bottom: var(--sp-xs);
+}
 
 /* ── Run bar ──────────────────────────────────────────────────────────── */
 .run-bar {

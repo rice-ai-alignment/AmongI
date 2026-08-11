@@ -239,7 +239,6 @@ const sections = [
 
 .docs-body {
   font-size: var(--fs-base); line-height: var(--lh-loose);
-  white-space: normal; word-wrap: break-word; overflow-wrap: break-word;
 }
 .docs-body .g { margin-top: var(--sp-sm); }
 .docs-body .dim { margin-bottom: var(--sp-xxs); padding-left: var(--sp-sm); }
