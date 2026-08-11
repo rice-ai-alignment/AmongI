@@ -312,6 +312,7 @@ const lines = computed(() => {
   line-height: var(--lh-body);
   font-size: var(--fs-base);
   cursor: default;
+  overflow: hidden; text-overflow: ellipsis;
 }
 .tree-line:hover {
   background: rgba(79,232,124,0.04);

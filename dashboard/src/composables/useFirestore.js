@@ -260,6 +260,9 @@ const userPermissions = ref(null);
 const canRunExperiments = computed(() =>
   userPermissions.value?.can_run_experiments === true
 );
+const isAdmin = computed(() =>
+  userPermissions.value?.is_admin === true
+);
 
 async function loadUserPermissions(uid) {
   if (!uid) { userPermissions.value = null; return; }
@@ -328,6 +331,33 @@ function unwatchJobs() {
   if (_jobsUnsub) { _jobsUnsub(); _jobsUnsub = null; }
 }
 
+// ── All jobs (global view, no study/experiment filter) ──────────────
+const allJobs = ref([]);
+let _allJobsUnsub = null;
+
+function watchAllJobs() {
+  const d = db();
+  if (!d) return () => {};
+  if (_allJobsUnsub) _allJobsUnsub();
+  _allJobsUnsub = d.collection("jobs")
+    .orderBy("created_at", "desc")
+    .limit(50)
+    .onSnapshot(
+      snap => { allJobs.value = snap.docs.map(d => ({ id: d.id, ...d.data() })); },
+      err => {
+        console.warn("[dashboard] All jobs watch error:", err.message || err);
+        if (err.message && err.message.includes("index")) {
+          console.warn("[dashboard] Create the required Firestore index:", err.message);
+        }
+      }
+    );
+  return _allJobsUnsub;
+}
+
+function stopAllJobsWatch() {
+  if (_allJobsUnsub) { _allJobsUnsub(); _allJobsUnsub = null; }
+}
+
 async function queueJob({ studyId, experimentCode, maxGames }) {
   const d = db();
   if (!d || !user.value) throw new Error("Not authenticated");
@@ -346,6 +376,70 @@ async function queueJob({ studyId, experimentCode, maxGames }) {
     result: null,
   });
   return docRef.id;
+}
+
+async function clearExperimentData(studyId, expId) {
+  const d = db();
+  if (!d || !user.value) throw new Error("Not authenticated");
+  const expRef = d.collection(COLLECTION).doc(studyId)
+    .collection("experiments").doc(expId);
+  const archiveRef = expRef.collection("archived_data").doc();
+
+  // Read current stats
+  const snap = await expRef.get();
+  if (!snap.exists) throw new Error("Experiment not found");
+  const data = snap.data();
+
+  // Archive stats & games
+  const archive = {
+    archived_at: firebase.firestore.FieldValue.serverTimestamp(),
+    total_games: data.total_games || 0,
+    total_kills: data.total_kills || 0,
+    total_ejections: data.total_ejections || 0,
+    by_winner: data.by_winner || {},
+    players: data.players || [],
+  };
+  await archiveRef.set(archive);
+
+  // Move games subcollection
+  const gamesSnap = await expRef.collection("games").get();
+  const batch = d.batch();
+  for (const g of gamesSnap.docs) {
+    batch.set(archiveRef.collection("games").doc(g.id), g.data());
+    batch.delete(g.ref);
+  }
+  await batch.commit();
+
+  // Reset stats
+  await expRef.update({
+    total_games: 0,
+    total_kills: 0,
+    total_ejections: 0,
+    by_winner: {},
+    players: [],
+  });
+  console.log("[dashboard] Data archived to", archiveRef.path);
+}
+
+// ── Admin ──────────────────────────────────────────────────────────
+
+async function listAllUsers() {
+  const d = db();
+  if (!d) return [];
+  const snap = await d.collection("users").get();
+  return snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+}
+
+async function updateUserPermissions(uid, updates) {
+  const d = db();
+  if (!d || !user.value) throw new Error("Not authenticated");
+  // Only allow setting specific fields from client
+  const allowed = {};
+  if ("can_run_experiments" in updates) allowed.can_run_experiments = updates.can_run_experiments;
+  if ("is_admin" in updates) allowed.is_admin = updates.is_admin;
+  if (Object.keys(allowed).length === 0) return;
+  await d.collection("users").doc(uid).update(allowed);
+  console.log("[dashboard] Updated user", uid, allowed);
 }
 
 // ── Config from Firestore ───────────────────────────────────────────
@@ -390,10 +484,12 @@ export function useFirestore() {
     // servers
     servers, startServerWatch, stopServerWatch,
     // user permissions
-    userPermissions, canRunExperiments, loadUserPermissions,
+    userPermissions, canRunExperiments, isAdmin, loadUserPermissions,
+    listAllUsers, updateUserPermissions,
     // jobs
     jobs, watchJobsForExperiment, unwatchJobs, queueJob,
+    allJobs, watchAllJobs, stopAllJobsWatch,
     // config
-    loadExperimentConfig, saveExperimentConfig,
+    loadExperimentConfig, saveExperimentConfig, clearExperimentData,
   };
 }

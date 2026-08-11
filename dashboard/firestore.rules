@@ -34,6 +34,16 @@ service cloud.firestore {
           // Study owner or server (admin SDK) can write
           allow write: if get(/databases/$(database)/documents/studies/$(studyId)).data.owner == request.auth.uid;
         }
+
+        // ── Archived Data ─────────────────────────────────────────
+        match /archived_data/{archiveId} {
+          // Study owner can read, create, delete archived snapshots
+          allow read, write: if get(/databases/$(database)/documents/studies/$(studyId)).data.owner == request.auth.uid;
+
+          match /games/{gameId} {
+            allow read, write: if get(/databases/$(database)/documents/studies/$(studyId)).data.owner == request.auth.uid;
+          }
+        }
       }
     }
 
@@ -73,19 +83,23 @@ service cloud.firestore {
 
     // ── Users ────────────────────────────────────────────────────
     match /users/{userId} {
-      // Users can read their own profile
-      allow read: if request.auth != null && request.auth.uid == userId;
+      // Anyone authenticated can read user profiles (needed for admin panel)
+      allow read: if request.auth != null;
 
       // Users can create their own profile (with can_run_experiments forced to false)
       allow create: if request.auth != null
                     && request.auth.uid == userId
                     && request.resource.data.can_run_experiments == false;
 
-      // Users can update their profile but cannot change can_run_experiments
-      // (only Admin SDK can flip that flag)
+      // Admins can update any user (including permissions)
+      allow update: if request.auth != null
+                    && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.is_admin == true;
+
+      // Non-admin users can update their own profile but cannot change permissions
       allow update: if request.auth != null
                     && request.auth.uid == userId
-                    && request.resource.data.can_run_experiments == resource.data.can_run_experiments;
+                    && request.resource.data.can_run_experiments == resource.data.can_run_experiments
+                    && request.resource.data.is_admin == resource.data.is_admin;
 
       allow delete: if false;
     }

@@ -1,7 +1,5 @@
 """games.among_us.game — AmongUsGame definition."""
 
-import random
-
 from games.base import BaseGame
 
 
@@ -30,14 +28,14 @@ class AmongUsGame(BaseGame):
         for at in engine._agent_types:
             engine._groups[at.id] = AgentGroup(name=at.id, _engine=engine)
 
-        # Assign players to types based on configured counts
+        # Assign players to types by index — deterministic across games.
+        # Player 0 gets the first type(s), player 1 the next, etc.
         type_assignments = []
         for at in engine._agent_types:
             type_assignments.extend([at.id] * at.count)
         if len(type_assignments) < len(active_ids):
             fallback = engine._agent_types[0].id
             type_assignments.extend([fallback] * (len(active_ids) - len(type_assignments)))
-        random.shuffle(type_assignments)
 
         for pi, pid in enumerate(active_ids):
             p = engine.players[pid]

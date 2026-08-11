@@ -119,23 +119,24 @@ function resultSummary(r) {
 
 .job-card {
   padding: var(--sp-xxs) 0;
-  border-bottom: var(--border-hair);
+  border-bottom: var(--border-hair); overflow: hidden;
 }
 .job-card:last-child { border-bottom: none; }
 
 .job-header {
   display: flex; align-items: baseline; gap: var(--sp-sm);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-base); overflow: hidden;
 }
 .job-detail {
   display: flex; gap: var(--sp-lg); font-size: var(--fs-sm);
-  padding: var(--sp-xxs) 0 0 var(--sp-sm);
+  padding: var(--sp-xxs) 0 0 var(--sp-sm); overflow: hidden;
 }
 .job-result {
   font-size: var(--fs-sm); padding: var(--sp-xxs) 0 0 var(--sp-sm);
+  overflow: hidden; text-overflow: ellipsis;
 }
 .job-error {
   font-size: var(--fs-sm); padding: var(--sp-xxs) 0 0 var(--sp-sm);
-  max-width: 80ch; word-break: break-word;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 </style>
