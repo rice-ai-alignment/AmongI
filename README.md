@@ -1,157 +1,136 @@
 # Among-I
 
-A multi-agent LLM simulation built in Godot 4. AI agents with distinct personalities explore a 2D world, move around, and chat with each other in real time. Each agent is powered by a large language model (Google Gemini or OpenAI) and makes autonomous decisions about where to go and what to say.
+A multi-agent LLM simulation. AI agents with distinct text-file personas explore a 2D tile world, move, chat, and play Among Us-style rounds — imposter kills, body reports, votes, ejections. Every agent decision comes from an LLM (OpenRouter). A Python engine owns all game logic, a Godot project renders it, and a Vue dashboard drives experiments, jobs, and data exploration.
 
 ## What it looks like
 
-Colorful Among Us-style sprites wander a 2D scene. A chat log panel in the bottom-left corner shows what the agents are saying to each other. Each agent's name and latest message float above their sprite.
+- **Godot renderer** — colorful Among Us-style sprites wander a tile map, chat bubbles float above them, a HUD shows the chat log.
+- **Dashboard** — a terminal-styled web app with studies, a config editor (tree/JSON with validation), job queueing with per-trial status, server monitoring, game/trace inspection, and an admin panel.
 
 ## Architecture
 
 ```
-┌─────────────────────┐        WebSocket         ┌──────────────────────────┐
-│   Godot 4 (Game)    │ ◄──────────────────────► │   Python Agent Runner    │
-│                     │         port 8080        │                          │
-│  - Renders world    │                          │  - Loads LLM personas    │
-│  - Moves sprites    │  Game state (JSON) ──►   │  - Calls Gemini/OpenAI   │
-│  - Shows chat HUD   │  ◄── Actions (JSON)      │  - Sends move + chat     │
-└─────────────────────┘                          └──────────┬───────────────┘
-                                                            │
-                                                    ┌───────▼────────┐
-                                                    │  LLM API       │
-                                                    │  (Gemini/GPT)  │
-                                                    └────────────────┘
+┌────────────────────────┐   WebSocket :8081    ┌──────────────────────────┐
+│ engine/ (Python)       │   render events      │ among-i/ (Godot)         │
+│  GameEngine            │◄────────────────────►│  Server.gd (WS server)   │
+│  agent.py (LLM calls)  │                      │  sprites, chat, camera   │
+│  RenderClient          │                      │  (rendering only — no    │
+└──────────┬─────────────┘                      │   validation or logic)   │
+           │ firebase_admin                     └──────────────────────────┘
+           ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Firestore (raia-labs)                    Firebase Storage     │
+│  studies/{study}/experiments/{exp}       (REST API uploads)  │
+│  ├─ config, stats, trials[], trial_*     {study}/{exp}/      │
+│  ├─ games/{id} + trace/{raw,summary}       {game_id}/        │
+│  ├─ archived_data/{id}                      trace.jsonl     │
+│  jobs/{id}, servers/{id}, users/{uid}       game.jsonl      │
+│                                              session.jsonl   │
+└──────────────────────────────────────────────────────────────┘
+           ▲
+┌──────────┴─────────────┐
+│ dashboard/ (Vue 3)     │  studies · config · jobs · servers ·
+└────────────────────────┘  inspect · admin · documentation
 ```
 
-**Communication format (every ~3 seconds):**
+The loop, every ~3 seconds: engine builds context (ASCII map, nearby bots, chat, prompt, action schema) → agent calls OpenRouter → decision JSON comes back → engine applies move/attack/chat/vote → render events go to Godot.
 
-Godot → Python (game state):
-```json
-{
-  "id": 12345,
-  "pos": { "x": 200, "y": 150 },
-  "bots": [{ "distance": 120.5, "angle": 0.78 }],
-  "name": "CowboyJack",
-  "chat_logs": ["Nona: existence is a rumor.", "CowboyJack: Yeehaw!"]
-}
-```
+## Repository Layout
 
-Python → Godot (agent decision):
-```json
-{
-  "name": "CowboyJack",
-  "move": "right",
-  "chat": "Howdy partner, mighty fine day ain't it?",
-  "reason": "Another agent is nearby, going to say hello"
-}
-```
-
-## Prerequisites
-
-| Requirement | Version |
+| Directory | What's in it |
 |---|---|
-| [Godot Engine](https://godotengine.org/download/) | 4.x |
-| Python | 3.10+ |
-| Open API key | (default) |
+| `engine/` | Python game logic: `engine.py` (state machine + loop), `agent.py` (LLM agents), `server_handler.py` (jobs runner), `bridge_server.py` (Firestore/Storage pushes), `experiment.py` + `components/` (config system), `games/` (Among Us game code), `schema_compiler.js` (config validator), `personas/` |
+| `among-i/` | Godot 4 project: WS server on :8081 that applies render events |
+| `dashboard/` | Vue 3 web app: config editor, jobs, servers, trial inspector, admin |
+| root | `docker-compose.yml` / `Dockerfile` (server deployment), `update.sh`, `.env` |
 
-## Setup
+## Quick Start
 
-### 1. Clone the repository
+### 1. Prerequisites
 
-```bash
-git clone https://github.com/rice-ai-alignment/among-i.git
-cd among-i
-```
+- Python 3.10+ (`cd engine && pip install -r requirements.txt`)
+- Godot 4.x (for the renderer)
+- Node 20+ (for the dashboard)
+- An OpenRouter API key
+- `engine/firebase-key.json` (Firebase service account — for the dashboard/server data flow)
 
-### 2. Install Python dependencies
+### 2. Configure
 
-```bash
-cd AgentControllers
-pip install langgraph langchain-google-genai websockets python-dotenv pydantic google-genai openai
-```
-
-### 3. Set up your API key
-
-Create a file called `.env` inside the `AgentControllers/` folder:
+Create `.env` in the repo root:
 
 ```bash
-# AgentControllers/.env
-
-# Use OpenAI:
-# MODEL_PROVIDER=openai
-# OPENAI_API_KEY=your_openai_api_key_here
-# OPENAI_MODEL=gpt-4o-mini
+OPEN_ROUTER_API_KEY=sk-or-...
+# MODEL=google/gemini-2.5-flash   # optional, default
+# TOKEN_LIMIT=100000
+# VERBOSE=1
 ```
 
-### 4. Import the Godot project
+### 3. Run the simulation locally
 
-1. Open Godot 4
-2. In the Project Manager, click **Import**
-3. Navigate to the `among-i/` subfolder and select `project.godot`
-4. Click **Import & Edit**
+**Terminal 1 — Godot**: open `among-i/project.godot` in Godot, press F5.
 
-## Running the Simulation
+**Terminal 2 — engine**:
 
-You need two things running at once: the Godot game (the server) and the Python agents (the clients).
-
-**Step 1 — Start the Godot server:**
-- In the Godot editor, press **F5** (or click the ▶ Play button in the top-right)
-- The game window opens and waits for agents to connect
-
-**Step 2 — Start the Python agents (in a separate terminal):**
 ```bash
-cd AgentControllers
-python index.py
+cd engine
+python run.py --config among_us_test.json --render   # with Godot
+python run.py --config among_us_test.json            # headless
 ```
 
-Two agents with randomly selected personalities will connect, spawn as sprites, and start moving and chatting. Watch the chat log panel in the bottom-left corner of the game window.
+Agents load random personas from `engine/personas/`, spawn, and start playing.
 
-**To stop:** Close the Godot window, then press `Ctrl+C` in the terminal.
+### 4. Run the dashboard
 
-## Project Structure
-
-```
-among-i/                    # Godot project root
-├── project.godot           # Godot project config (entry point)
-├── FirstScene.tscn         # Main scene: loads server + chat HUD
-├── Server.gd               # WebSocket server, manages all agents
-├── Player.tscn             # Agent sprite template (body + name + chat bubble)
-├── player.gd               # Agent movement logic
-├── ChatBox.tscn            # Chat log HUD panel (bottom-left overlay)
-├── ChatBox.gd              # Chat log logic (add messages, auto-scroll)
-└── AmongUsSprites.jpg      # Spritesheet for agent visuals
-
-AgentControllers/           # Python backend
-├── index.py                # Main agent driver (LangGraph + LLM)
-├── agent_test.py           # Quick API key test
-├── example_response.json   # Template for LLM structured output
-└── personas/               # Personality files for each agent
-    ├── CowboyJack.txt
-    ├── Nona_the_Nihilist.txt
-    ├── Biscuit.txt
-    └── ...                 # 12+ personas included
+```bash
+cd dashboard
+npm install
+npm run dev        # http://localhost:5173
 ```
 
-## Persona System
+### 5. Run a jobs server
 
-Each agent is given a personality from a text file in `AgentControllers/personas/`. Two personas are randomly selected each run.
+Servers poll Firestore for queued jobs and run experiments:
 
-To create a new persona:
-1. Create a `.txt` file in `AgentControllers/personas/`
-2. Write a character description in natural language — describe their personality, speaking style, quirks, and worldview
-3. The file is loaded as a system prompt for the LLM, shaping how that agent speaks and behaves
+```bash
+cd engine
+python server_handler.py --name my-server
+```
 
-Example excerpt from `CowboyJack.txt`:
-> You are CowboyJack, a rugged cowboy who communicates using Western slang and frontier wisdom...
+Or via Docker (any machine, just needs `firebase-key.json` + `docker-compose.yml`):
 
-## Key Settings
+```bash
+docker compose up -d
+docker compose logs -f
+```
 
-In `Server.gd`:
-- `UPDATE_INTERVAL = 3.0` — how often (in seconds) the server sends state to each agent
-- `CHAT_DISTANCE = 10000` — how close two agents must be to hear each other's messages
+Update a deployed server: `./update.sh` (pulls latest, bumps version, rebuilds, restarts).
 
-In `AgentControllers/index.py`:
-- `LLM_TIMEOUT = 15` — seconds before an LLM call times out
-- `MODEL_PROVIDER` — set to `"google"` or `"openai"` in `.env`
+## Experiments, Jobs, and Trials
 
-This project is maintained by [Rice AI Alignment](https://github.com/rice-ai-alignment). MIT License.
+- **Config** — every experiment config is a JSON tree of typed components (`Game::AmongUsGame` with `GamePhase`/`TargetedAction` entries, `AgentType`s, `WinCondition`s, expressions, conditions). The dashboard's config editor validates with the same compiler the server pipeline uses (`schema_compiler.js` against `schema.json` exported from the Python component registry). Unused parameters are hard errors.
+- **Job** — a Firestore doc pointing at a study + experiment. Created by the dashboard's run button (after validating the saved config).
+- **Trial** — one individual game. The experiment doc holds a `trials[]` status array; each server claims a random pending index via a Firestore transaction, waits 0–5s to mitigate collisions, and runs one game. Completion metadata records which server, when, and which version ran each trial.
+- **Data & storage** — finished-game recaps and stats go to Firestore; raw per-trial logs and the decision trace go to Firebase Storage at `{study}/{experiment}/{trial}/` (`trace.jsonl`, `game.jsonl`, `session.jsonl`), publicly readable for the dashboard.
+- **Clear data** — archives stats, games, and trial metadata under `archived_data/`, resets the experiment to a fresh run-ready state, and stamps `cleared_at` so in-flight server results can't resurrect wiped data.
+
+## Dashboard Details
+
+- **Config tab** — tree view with tooltips and inline editing, JSON editing, and a validate tab. Locked whenever the experiment has data; unlock by clearing data. A reset-to-example button restores one of the bundled sample configs.
+- **Jobs tab** — active + history tables; click any job for a popup with full status and a per-trial breakdown (claims, versions, errors).
+- **Servers tab** — live heartbeat status of all registered servers.
+- **Inspect tab** — pick a trial, browse its decision trace; context/decision events open in a popup.
+- **Admin tab** — user permission management (admins only).
+
+Deploying rules: `firebase deploy --only firestore:rules` and `firebase deploy --only storage` from `dashboard/`. Hosting: `firebase deploy --only hosting` (serves `dashboard/dist`).
+
+## Log Viewer
+
+Zero-dependency local viewer for raw engine logs:
+
+```bash
+cd engine && node server.mjs   # http://localhost:3000
+```
+
+## License
+
+MIT. Maintained by Rice AI Alignment.

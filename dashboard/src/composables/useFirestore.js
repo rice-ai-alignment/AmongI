@@ -274,28 +274,37 @@ async function loadUserPermissions(uid) {
       userPermissions.value = snap.data();
       return;
     }
+    // Doc genuinely does not exist — create via transaction so a
+    // concurrent creator can never be overwritten.
+    try {
+      await d.runTransaction(async (txn) => {
+        const fresh = await txn.get(d.collection("users").doc(uid));
+        if (!fresh.exists) {
+          txn.set(d.collection("users").doc(uid), {
+            uid: uid,
+            email: user.value?.email || "",
+            display_name: user.value?.displayName || "",
+            can_run_experiments: false,
+            created_at: firebase.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+      });
+    } catch (e) {
+      if (!e.message?.includes?.("permission") && !e.code?.includes?.("permission")) {
+        console.warn("[dashboard] loadUserPermissions create failed:", e.message);
+      }
+    }
+    userPermissions.value = { can_run_experiments: false };
+    return;
   } catch (e) {
-    // Rules may not be deployed yet — continue to try creation
+    // READ FAILED — never attempt to write here. A failed read is NOT
+    // evidence the doc is missing; overwriting would wipe permissions
+    // (this was wiping is_admin/can_run_experiments for real users).
     if (!e.message?.includes?.("permission") && !e.code?.includes?.("permission")) {
       console.warn("[dashboard] loadUserPermissions read failed:", e.message);
     }
+    userPermissions.value = null; // unknown state — UI treats as no perms
   }
-  // Either doc doesn't exist or read was denied — try to create it
-  try {
-    await d.collection("users").doc(uid).set({
-      uid: uid,
-      email: user.value?.email || "",
-      display_name: user.value?.displayName || "",
-      can_run_experiments: false,
-      created_at: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch (e) {
-    // Rules may not allow creation yet — just use a local default
-    if (!e.message?.includes?.("permission") && !e.code?.includes?.("permission")) {
-      console.warn("[dashboard] loadUserPermissions create failed:", e.message);
-    }
-  }
-  userPermissions.value = { can_run_experiments: false };
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────
@@ -358,13 +367,82 @@ function stopAllJobsWatch() {
   if (_allJobsUnsub) { _allJobsUnsub(); _allJobsUnsub = null; }
 }
 
-async function queueJob({ studyId, experimentCode, maxGames }) {
+// Per-trial status for the job detail popup (lives on the experiment doc)
+async function loadExperimentTrials(studyId, expId) {
+  const d = db();
+  const empty = { list: [], claimedBy: {}, completedBy: {}, versions: {}, errors: {} };
+  if (!d) return empty;
+  try {
+    const snap = await d.collection(COLLECTION).doc(studyId)
+      .collection("experiments").doc(expId).get({ source: "server" });
+    if (!snap.exists) return empty;
+    const data = snap.data();
+    return {
+      list: data.trials || [],
+      claimedBy: data.trial_claimed_by || {},
+      completedBy: data.trial_completed_by || {},
+      versions: data.trial_versions || {},
+      errors: data.trial_errors || {},
+    };
+  } catch (e) {
+    console.warn("[dashboard] loadExperimentTrials failed:", e.message);
+    return empty;
+  }
+}
+
+// Jobs claimed by a specific server (for the server-monitor popup).
+// Single-field equality query — no composite index required; sorted client-side.
+async function loadServerJobs(serverName) {
+  const d = db();
+  if (!d || !serverName) return [];
+  try {
+    const snap = await d.collection("jobs")
+      .where("claimed_by", "==", serverName)
+      .limit(20)
+      .get({ source: "server" });
+    const jobs = snap.docs.map(x => ({ id: x.id, ...x.data() }));
+    jobs.sort((a, b) => {
+      const ta = a.created_at?.toMillis?.() || 0;
+      const tb = b.created_at?.toMillis?.() || 0;
+      return tb - ta;
+    });
+    return jobs;
+  } catch (e) {
+    console.warn("[dashboard] loadServerJobs failed:", e.message);
+    return [];
+  }
+}
+
+// Ask the server running a job to expose its render relay (see
+// server_handler._maybe_start_render_for_job). The job doc's `render`
+// field is published by the server when the relay is up.
+async function requestJobRender(jobId) {
   const d = db();
   if (!d || !user.value) throw new Error("Not authenticated");
+  await d.collection("jobs").doc(jobId).update({ render_requested: true });
+  console.log("[dashboard] Render requested for job", jobId);
+}
+
+async function loadJob(jobId) {
+  const d = db();
+  if (!d) return null;
+  try {
+    const snap = await d.collection("jobs").doc(jobId).get({ source: "server" });
+    return snap.exists ? { id: snap.id, ...snap.data() } : null;
+  } catch (e) {
+    console.warn("[dashboard] loadJob failed:", e.message);
+    return null;
+  }
+}
+
+async function queueJob({ studyId, experimentCode }) {
+  const d = db();
+  if (!d || !user.value) throw new Error("Not authenticated");
+  // Job just points at an experiment — the experiment's trials array
+  // determines how many individual games (trials) get run.
   const docRef = await d.collection("jobs").add({
     study_id: studyId,
     experiment_code: experimentCode,
-    max_games: maxGames || 1,
     created_by: user.value.uid,
     created_at: firebase.firestore.FieldValue.serverTimestamp(),
     status: "queued",
@@ -376,6 +454,92 @@ async function queueJob({ studyId, experimentCode, maxGames }) {
     result: null,
   });
   return docRef.id;
+}
+
+// ── Duplication ────────────────────────────────────────────────
+
+async function duplicateStudy(studyId, includeData) {
+  const d = db();
+  if (!d || !user.value) throw new Error("Not authenticated");
+  const srcRef = d.collection(COLLECTION).doc(studyId);
+  const srcSnap = await srcRef.get();
+  if (!srcSnap.exists) throw new Error("Study not found");
+  const src = srcSnap.data();
+
+  const newId = studyId + "-copy-" + Date.now().toString(36);
+  await d.collection(COLLECTION).doc(newId).set({
+    name: (src.name || studyId) + " (copy)",
+    description: src.description || "",
+    owner: user.value.uid,
+    status: "active",
+    created_at: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  // Copy experiments
+  const expsSnap = await srcRef.collection("experiments").get();
+  for (const e of expsSnap.docs) {
+    await duplicateExperimentInternal(e.ref, d.collection(COLLECTION).doc(newId)
+      .collection("experiments").doc(e.id), e.data(), includeData);
+  }
+  await loadStudies();
+  return newId;
+}
+
+async function duplicateExperiment(studyId, expId, includeData) {
+  const d = db();
+  if (!d || !user.value) throw new Error("Not authenticated");
+  const srcExp = d.collection(COLLECTION).doc(studyId)
+    .collection("experiments").doc(expId);
+  const srcSnap = await srcExp.get();
+  if (!srcSnap.exists) throw new Error("Experiment not found");
+  const data = srcSnap.data();
+
+  const newExpId = expId + "-copy-" + Date.now().toString(36);
+  const dstExp = d.collection(COLLECTION).doc(studyId)
+    .collection("experiments").doc(newExpId);
+  await duplicateExperimentInternal(srcExp, dstExp, data, includeData);
+  await loadExperiments();
+  return newExpId;
+}
+
+async function duplicateExperimentInternal(srcExpRef, dstExpRef, ed, includeData) {
+  // Base experiment doc (settings)
+  await dstExpRef.set({
+    name: ed.name || "copy",
+    description: ed.description || "",
+    config: ed.config || null,
+    created_at: firebase.firestore.FieldValue.serverTimestamp(),
+    status: "active",
+    total_games: includeData ? (ed.total_games || 0) : 0,
+    total_kills: includeData ? (ed.total_kills || 0) : 0,
+    total_ejections: includeData ? (ed.total_ejections || 0) : 0,
+    by_winner: includeData ? (ed.by_winner || {}) : {},
+    players: includeData ? (ed.players || []) : [],
+    trials: includeData ? (ed.trials || []) : [],
+  });
+
+  if (!includeData) return;
+
+  // Copy games + trace docs (batched, 400 writes per batch)
+  const gamesSnap = await srcExpRef.collection("games").get();
+  let batch = db().batch();
+  let ops = 0;
+  const flush = async () => {
+    if (ops > 0) { await batch.commit(); batch = db().batch(); ops = 0; }
+  };
+  for (const g of gamesSnap.docs) {
+    batch.set(dstExpRef.collection("games").doc(g.id), g.data());
+    ops++;
+    const tracesSnap = await g.ref.collection("trace").get();
+    for (const t of tracesSnap.docs) {
+      batch.set(dstExpRef.collection("games").doc(g.id)
+        .collection("trace").doc(t.id), t.data());
+      ops++;
+      if (ops >= 400) await flush();
+    }
+    if (ops >= 400) await flush();
+  }
+  await flush();
 }
 
 async function clearExperimentData(studyId, expId) {
@@ -390,7 +554,7 @@ async function clearExperimentData(studyId, expId) {
   if (!snap.exists) throw new Error("Experiment not found");
   const data = snap.data();
 
-  // Archive stats & games
+  // Archive stats, games, and trial metadata
   const archive = {
     archived_at: firebase.firestore.FieldValue.serverTimestamp(),
     total_games: data.total_games || 0,
@@ -398,6 +562,13 @@ async function clearExperimentData(studyId, expId) {
     total_ejections: data.total_ejections || 0,
     by_winner: data.by_winner || {},
     players: data.players || [],
+    trials: data.trials || [],
+    trial_claimed_at: data.trial_claimed_at || {},
+    trial_claimed_by: data.trial_claimed_by || {},
+    trial_completed_at: data.trial_completed_at || {},
+    trial_completed_by: data.trial_completed_by || {},
+    trial_versions: data.trial_versions || {},
+    trial_errors: data.trial_errors || {},
   };
   await archiveRef.set(archive);
 
@@ -410,15 +581,56 @@ async function clearExperimentData(studyId, expId) {
   }
   await batch.commit();
 
-  // Reset stats
+  // Reset stats + trials + trial metadata (fresh run-ready state).
+  // cleared_at lets servers discard in-flight trials/games that belong
+  // to the wiped run instead of resurrecting them after the clear.
+  const del = firebase.firestore.FieldValue.delete();
   await expRef.update({
     total_games: 0,
     total_kills: 0,
     total_ejections: 0,
     by_winner: {},
     players: [],
+    trials: [],
+    trial_claimed_at: del,
+    trial_claimed_by: del,
+    trial_completed_at: del,
+    trial_completed_by: del,
+    trial_versions: del,
+    trial_errors: del,
+    cleared_at: firebase.firestore.FieldValue.serverTimestamp(),
   });
   console.log("[dashboard] Data archived to", archiveRef.path);
+}
+
+// ── Game traces ────────────────────────────────────────────────────
+
+async function loadGameTrace(studyId, expId, gameId) {
+  const d = db();
+  if (!d) return null;
+  try {
+    const ref = d.collection(COLLECTION).doc(studyId)
+      .collection("experiments").doc(expId)
+      .collection("games").doc(gameId)
+      .collection("trace").doc("raw");
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+    const meta = snap.data();
+
+    // Primary: fetch from GCS public URL
+    if (meta.url) {
+      const resp = await fetch(meta.url);
+      if (resp.ok) return await resp.text();
+      console.warn("[dashboard] GCS fetch failed, trying fallback...");
+    }
+    // Fallback: inline data stored in Firestore
+    if (meta.data) return meta.data;
+    // Legacy format
+    return meta.trace || JSON.stringify(meta);
+  } catch (e) {
+    console.warn("[dashboard] loadGameTrace failed:", e.message);
+  }
+  return null;
 }
 
 // ── Admin ──────────────────────────────────────────────────────────
@@ -443,25 +655,67 @@ async function updateUserPermissions(uid, updates) {
 }
 
 // ── Config from Firestore ───────────────────────────────────────────
+function configFingerprint(cfg) {
+  if (!cfg || typeof cfg !== "object") return String(cfg);
+  const keys = Object.keys(cfg).sort().join(",");
+  return `${cfg.type || "?"}::${cfg.class || "?"} trial_count=${cfg.trial_count ?? "—"} keys=[${keys}]`;
+}
+
 async function saveExperimentConfig(studyId, expId, configObj) {
   const d = db();
   if (!d || !user.value) throw new Error("Not authenticated");
+  const path = `${COLLECTION}/${studyId}/experiments/${expId}`;
+  const fp = configFingerprint(configObj);
+  console.log(`[dashboard] save → ${path}: ${fp}`);
   const ref = d.collection(COLLECTION).doc(studyId)
     .collection("experiments").doc(expId);
-  await ref.set({ config: configObj }, { merge: true });
-  console.log("[dashboard] Config saved to", `${COLLECTION}/${studyId}/experiments/${expId}`);
+
+  // Read the current doc so we can remove any stale keys left inside `config`
+  const snap = await ref.get({ source: "server" });
+  const oldConfig = snap.exists ? snap.data().config : null;
+
+  // Firestore forbids updating a map and its children in one write, so
+  // delete stale keys first (separate update), then write the new config.
+  if (oldConfig && typeof oldConfig === "object" && !Array.isArray(oldConfig)) {
+    const deletes = {};
+    for (const key of Object.keys(oldConfig)) {
+      if (!(key in configObj)) {
+        deletes[`config.${key}`] = firebase.firestore.FieldValue.delete();
+      }
+    }
+    if (Object.keys(deletes).length) {
+      console.log(`[dashboard] removing stale config keys: ${Object.keys(deletes).map(k => k.replace("config.", "")).join(", ")}`);
+      await ref.update(deletes);
+    }
+  }
+  await ref.update({ config: configObj });
+
+  // Verify against the SERVER — bypasses any local cache, so a write that
+  // didn't actually commit fails loudly here instead of silently reverting.
+  const after = await ref.get({ source: "server" });
+  const stored = after.exists ? after.data().config : null;
+  const storedFp = configFingerprint(stored);
+  if (storedFp !== fp) {
+    throw new Error(
+      `write did not persist — DB has ${storedFp} right after writing ${fp}. ` +
+      "Check the Network tab for the update() response (rules deny? offline queue?).");
+  }
+  console.log(`[dashboard] save verified → ${path}`);
 }
 
 async function loadExperimentConfig(studyId, expId) {
   const d = db();
   if (!d) return null;
   try {
+    const path = `${COLLECTION}/${studyId}/experiments/${expId}`;
     const snap = await d.collection(COLLECTION).doc(studyId)
-      .collection("experiments").doc(expId).get();
+      .collection("experiments").doc(expId).get({ source: "server" });
     if (snap.exists) {
       const data = snap.data();
+      console.log(`[dashboard] load ← ${path}: ${configFingerprint(data.config)}`);
       return data.config || null;
     }
+    console.log(`[dashboard] load ← ${path}: (doc does not exist)`);
   } catch (e) {
     console.warn("[dashboard] loadExperimentConfig failed:", e.message);
   }
@@ -486,10 +740,14 @@ export function useFirestore() {
     // user permissions
     userPermissions, canRunExperiments, isAdmin, loadUserPermissions,
     listAllUsers, updateUserPermissions,
+    loadGameTrace,
     // jobs
     jobs, watchJobsForExperiment, unwatchJobs, queueJob,
-    allJobs, watchAllJobs, stopAllJobsWatch,
+    allJobs, watchAllJobs, stopAllJobsWatch, loadExperimentTrials, loadServerJobs,
+    requestJobRender, loadJob,
     // config
     loadExperimentConfig, saveExperimentConfig, clearExperimentData,
+    // duplication
+    duplicateStudy, duplicateExperiment,
   };
 }

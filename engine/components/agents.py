@@ -32,6 +32,7 @@ class AgentType(ExperimentComponent):
         "id": Param(str, "", "Machine-readable identifier (used in references)"),
         "displayName": Param(str, "", "Human-readable display name"),
         "prompt": Param(str, "", "System prompt for this agent type"),
+        "model": Param(str, "", "OpenRouter model ID for this agent type (overrides default)"),
         "count": Param(int, 1, "How many agents of this type to spawn"),
         "context_manager": Param(None, None, "Optional ContextManager config for this type"),
     }

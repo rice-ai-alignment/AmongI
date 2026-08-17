@@ -51,7 +51,7 @@ class _MapBase(ExperimentComponent):
 
 
 class SquareMap(_MapBase):
-    """A square arena — open interior with a 1-tile border wall."""
+    """A square arena — every tile walkable."""
     component_type = "Map"
     params = {"size": Param(int, 16, "Side length of the square arena")}
     exposes = {
@@ -65,7 +65,7 @@ class SquareMap(_MapBase):
         },
     }
 
-    def __init__(self, size: int = 16, wall: int = 1, **kwargs):
+    def __init__(self, size: int = 16, **kwargs):
         # Set params BEFORE super().__init__ so _validate() sees them
         kwargs.setdefault("size", size)
         super().__init__(**kwargs)
@@ -75,8 +75,8 @@ class SquareMap(_MapBase):
         self.max_x = self.size - 1
         self.min_y = 0
         self.max_y = self.size - 1
-        for x in range(wall, self.size - wall):
-            for y in range(wall, self.size - wall):
+        for x in range(self.size):
+            for y in range(self.size):
                 self._walkable.add(Tile(x, y))
         print(f"[Map] Square arena {self.size}x{self.size} "
               f"({len(self._walkable)} walkable)")

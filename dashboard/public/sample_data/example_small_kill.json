@@ -3,8 +3,7 @@
   "description": "2 agents (1 crew + 1 impostor) on an 8×8 map. No voting — impostor wins by killing. Minimal AmongUsGame config.",
   "type": "Game",
   "class": "AmongUsGame",
-  "game_count": 3,
-  "map": {"type": "Map", "class": "SquareMap", "size": 8},
+  "trial_count": 3,
   "agents": {
     "type": "AgentConfig", "class": "AgentConfig",
     "types": [
@@ -26,6 +25,8 @@
   ],
   "phases": [
     {"type": "GamePhase", "class": "PlayPhase", "timeout": 300, "tick_interval": 2,
+     "position_mode": {"type": "Position", "class": "TilePosition",
+       "map": {"type": "Map", "class": "SquareMap", "size": 8}},
      "actions": [
        {"type": "AgentAction", "class": "MoveAction", "range": 1, "available_to": ["Crewmate", "Imposter"]},
        {"type": "TargetedAction", "class": "KillAction", "range": 2, "available_to": ["Imposter"]}

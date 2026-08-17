@@ -1,4 +1,5 @@
 .env
+engine/version.json
 CLAUDE.md
 chat_logs/
 log/

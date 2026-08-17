@@ -1,0 +1,24 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Per-trial data ─────────────────────────────────────────
+    // Each trial's folder holds its logs and trace together:
+    //   {studyId}/{expId}/{gameId}/trace.jsonl
+    //   {studyId}/{expId}/{gameId}/game.jsonl
+    //   {studyId}/{expId}/{gameId}/session.jsonl
+    // Public read — the dashboard fetches these via public URLs.
+    // Writes only via Admin SDK (server handler) which bypasses rules.
+    match /{studyId}/{expId}/{gameId}/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ── Everything else ───────────────────────────────────────
+    // Denied by default — no client-side access to any other path.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

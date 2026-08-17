@@ -20,6 +20,9 @@ var _server := TCPServer.new()
 var _render_port := 8081
 var _render_peer: WebSocketPeer = null
 var _peer_id: int = -1
+var _remote_mode: bool = false
+var _remote_url: String = ""
+var _remote_retry_at: float = 0.0
 
 # ── Player tracking (agent_id -> Player node) ────────────────────────────
 
@@ -35,13 +38,18 @@ const AGENT_COLORS = [
 	"#C8CD00", "#3F474E", "#D85A30", "#378ADD", "#1D9E75"
 ]
 
-# ── Camera auto-framing ──────────────────────────────────────────────────
+# ── Camera (auto-framing + freecam) ─────────────────────────────────────
+
+var camera_mode: String = "auto"   # "auto" | "free"
+var _cam_label: Label
 
 var _camera_padding: float = 500.0
 var _camera_min_zoom: float = 0.05
 var _camera_max_zoom: float = 8.0
 var _camera_smooth_speed: float = 4.0
 var _camera_min_world_size: float = 400.0
+
+var _freecam_speed: float = 900.0   # px/sec at zoom 1
 
 # ── Chat ─────────────────────────────────────────────────────────────────
 
@@ -52,9 +60,27 @@ const MAX_CHAT_MESSAGES = 50
 var instant_mode: bool = false   # skip tweens, snap positions
 var silent: bool = false         # suppress debug prints during fast-forward
 
+# ── Per-agent recent actions (shown above their heads) ────────────────────
+
+const MAX_RECENT_ACTIONS := 3
+var _recent_actions: Dictionary = {}   # agent_id -> Array[String]
+
 # ── Initialization ───────────────────────────────────────────────────────
 
 func _ready():
+	# Camera mode HUD label
+	var cam_layer := CanvasLayer.new()
+	cam_layer.name = "CamHudLayer"
+	add_child(cam_layer)
+	_cam_label = Label.new()
+	_cam_label.position = Vector2(16, 16)
+	_cam_label.add_theme_font_size_override("font_size", 18)
+	_cam_label.add_theme_color_override("font_color", Color(0.9, 0.95, 0.9))
+	_cam_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	_cam_label.add_theme_constant_override("outline_size", 5)
+	cam_layer.add_child(_cam_label)
+	_update_camera_label()
+
 	# If PlaybackController loaded a file (child _ready runs first), skip listening
 	if has_node("PlaybackController") and $PlaybackController.is_file_mode():
 		print("[Renderer] File replay mode — skipping WebSocket listen")
@@ -63,6 +89,16 @@ func _ready():
 
 
 func start_listening():
+	# Remote relay mode — connect OUT to a server's render relay instead of
+	# listening locally. Web export: /index.html?connect=wss://host:8081
+	# Desktop: godot --path . -- --connect=ws://host:8081
+	var connect_url = _remote_connect_url()
+	if connect_url != "":
+		_remote_mode = true
+		_remote_url = connect_url
+		_remote_connect()
+		return
+
 	var err = _server.listen(_render_port)
 	if err == OK:
 		print("[Renderer] Listening for engine on port ", _render_port)
@@ -70,6 +106,27 @@ func start_listening():
 		print("[Renderer] FATAL: Cannot bind port ", _render_port, " (error ", err, ")")
 		print("[Renderer] Is another Godot instance or process using this port?")
 		get_tree().quit(1)
+
+
+func _remote_connect_url() -> String:
+	if OS.has_feature("web"):
+		return JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('connect') || ''")
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--connect="):
+			return a.substr(10)
+	return ""
+
+
+func _remote_connect():
+	if _render_peer != null and _render_peer.get_ready_state() == WebSocketPeer.STATE_CONNECTING:
+		return
+	_render_peer = WebSocketPeer.new()
+	var e = _render_peer.connect_to_url(_remote_url)
+	if e != OK:
+		print("[Renderer] Cannot connect to render relay: ", _remote_url, " (error ", e, ")")
+		_render_peer = null
+		return
+	print("[Renderer] Remote relay mode — connecting to ", _remote_url)
 
 
 func stop_listening():
@@ -86,10 +143,72 @@ func clear_world():
 
 # ── Main loop ────────────────────────────────────────────────────────────
 
-func _process(_delta):
+func _process(delta):
 	_accept_connection()
 	_poll_render_peer()
-	_update_camera(_delta)
+
+	if camera_mode == "free":
+		_update_freecam(delta)
+	else:
+		_update_camera(delta)
+
+
+# ── Camera input / freecam ──────────────────────────────────────────────
+
+func _update_camera_label():
+	_cam_label.text = "CAM: free — WASD move · wheel zoom · [F] auto" if camera_mode == "free" \
+		else "CAM: auto — [F] freecam"
+
+
+func _unhandled_input(event: InputEvent):
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_F:
+			camera_mode = "free" if camera_mode == "auto" else "auto"
+			print("[Renderer] Camera mode: ", camera_mode)
+			_update_camera_label()
+			return
+
+	if camera_mode != "free":
+		return
+
+	if event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			camera.zoom = (camera.zoom * 1.1).clamp(Vector2(_camera_min_zoom, _camera_min_zoom),
+													Vector2(_camera_max_zoom, _camera_max_zoom))
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			camera.zoom = (camera.zoom / 1.1).clamp(Vector2(_camera_min_zoom, _camera_min_zoom),
+													Vector2(_camera_max_zoom, _camera_max_zoom))
+
+
+func _update_freecam(delta: float):
+	var dir := Vector2.ZERO
+	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+		dir.y -= 1
+	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+		dir.y += 1
+	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+		dir.x -= 1
+	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		dir.x += 1
+	if dir != Vector2.ZERO:
+		# Scale pan speed by zoom so it feels constant on screen
+		var speed: float = _freecam_speed / maxf(camera.zoom.x, 0.001)
+		camera.global_position += dir.normalized() * speed * delta
+
+
+# ── Recent-action tracking ──────────────────────────────────────────────
+
+func _record_action(aid: int, text: String):
+	if aid < 0:
+		return
+	if not _recent_actions.has(aid):
+		_recent_actions[aid] = []
+	var arr: Array = _recent_actions[aid]
+	arr.push_front(text)
+	while arr.size() > MAX_RECENT_ACTIONS:
+		arr.pop_back()
+	if aid in _players and is_instance_valid(_players[aid]):
+		_players[aid].set_recent_actions(arr)
 
 # ── WebSocket handling ───────────────────────────────────────────────────
 
@@ -116,6 +235,11 @@ func _accept_connection():
 	print("[Renderer] Python engine connected (peer ", _peer_id, ")")
 
 func _poll_render_peer():
+	# Remote mode auto-reconnect
+	if _remote_mode and _render_peer == null \
+			and Time.get_ticks_msec() / 1000.0 >= _remote_retry_at:
+		_remote_connect()
+
 	if _render_peer == null:
 		return
 
@@ -130,9 +254,14 @@ func _poll_render_peer():
 				_handle_event(event)
 
 	elif state == WebSocketPeer.STATE_CLOSED or state == WebSocketPeer.STATE_CLOSING:
-		print("[Renderer] Python engine disconnected")
-		_render_peer = null
-		_peer_id = -1
+		if _remote_mode:
+			_render_peer = null
+			_remote_retry_at = Time.get_ticks_msec() / 1000.0 + 2.0
+			print("[Renderer] Relay disconnected — reconnecting in 2s")
+		else:
+			print("[Renderer] Python engine disconnected")
+			_render_peer = null
+			_peer_id = -1
 
 # ── Event dispatcher ─────────────────────────────────────────────────────
 
@@ -205,6 +334,9 @@ func _handle_event(event: Dictionary):
 		"voting_result", "result":
 			_ev_voting_result(event)
 
+		"map_data":
+			_ev_map_data(event)
+
 		_:
 			print("[Renderer] Unknown event type: ", etype)
 
@@ -243,6 +375,59 @@ func _ev_phase_change(ev: Dictionary):
 			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: ══════ VOTING PHASE (" + str(int(countdown)) + "s) ══════", ev.get("elapsed_ms", -1.0))
 		"playing":
 			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Playing!", ev.get("elapsed_ms", -1.0))
+
+func _ev_map_data(ev: Dictionary):
+	var w = ev.get("width", 0)
+	var h = ev.get("height", 0)
+	var walkable = ev.get("walkable", [])
+	var min_x = ev.get("min_x", 0)
+	var min_y = ev.get("min_y", 0)
+	print("[Renderer] Map received: ", w, "x", h, " (", walkable.size(), " walkable tiles)")
+	if w <= 0 or h <= 0 or tile_map == null:
+		return
+
+	# Pick floor/wall tiles from the tileset by their custom "walkable" data.
+	# No manual scene placement needed — the map is painted at runtime so the
+	# visual always matches the engine's map.
+	var floor_atlas := Vector2i(-1, -1)
+	var wall_atlas := Vector2i(-1, -1)
+	var ts: TileSet = tile_map.tile_set
+	if ts:
+		var src = ts.get_source(0) as TileSetAtlasSource
+		if src:
+			for i in src.get_tiles_count():
+				var coords: Vector2i = src.get_tile_id(i)
+				var td: TileData = src.get_tile_data(coords, 0)
+				var is_walkable: bool = td != null and td.get_custom_data("walkable")
+				if is_walkable and floor_atlas.x < 0:
+					floor_atlas = coords
+				elif not is_walkable and wall_atlas.x < 0:
+					wall_atlas = coords
+				if floor_atlas.x >= 0 and wall_atlas.x >= 0:
+					break
+	if floor_atlas.x < 0:
+		floor_atlas = Vector2i(0, 6)   # fallback if custom data is missing
+	if wall_atlas.x < 0:
+		wall_atlas = Vector2i(0, 0)
+	print("[Renderer] Painting map with floor=", floor_atlas, " wall=", wall_atlas)
+
+	# Build walkable set (handles [[x,y],...] pairs and {x,y} dicts)
+	var walk_set := {}
+	for c in walkable:
+		if c is Array and c.size() >= 2:
+			walk_set[Vector2i(int(c[0]), int(c[1]))] = true
+		elif c is Dictionary:
+			walk_set[Vector2i(int(c.get("x", 0)), int(c.get("y", 0)))] = true
+
+	# Repaint the whole map from the engine's grid
+	tile_map.clear()
+	for y in range(h):
+		for x in range(w):
+			var cell := Vector2i(min_x + x, min_y + y)
+			if walk_set.has(cell):
+				tile_map.set_cell(cell, 0, floor_atlas)
+			else:
+				tile_map.set_cell(cell, 0, wall_atlas)
 
 # ── Player spawn / despawn ──
 
@@ -287,6 +472,7 @@ func _clear_all_players():
 	_players.clear()
 	_player_names.clear()
 	_player_colors.clear()
+	_recent_actions.clear()
 
 # ── Player movement ──
 
@@ -310,8 +496,20 @@ func _ev_player_died(ev: Dictionary):
 	var aid = int(ev.get("agent_id", -1))
 	var cause = ev.get("cause", "kill")
 	if aid in _players and is_instance_valid(_players[aid]):
-		_players[aid].visible = false
+		# Leave a visible corpse (dark tint) instead of hiding the player
+		_players[aid].set_dead()
 		print("[Renderer] Player ", _player_names.get(aid, "?"), " died (", cause, ")")
+	# Record the kill on the killer's action list
+	var killed_by = ev.get("killed_by", null)
+	if killed_by != null:
+		var victim := str(_player_names.get(aid, "?"))
+		if killed_by is int or (killed_by is String and killed_by.is_valid_int()):
+			_record_action(int(killed_by), "killed " + victim)
+		else:
+			for other_id in _player_names.keys():
+				if str(_player_names[other_id]) == str(killed_by):
+					_record_action(int(other_id), "killed " + victim)
+					break
 
 func _ev_player_ejected(ev: Dictionary):
 	var aid = int(ev.get("agent_id", -1))
@@ -323,7 +521,7 @@ func _ev_player_respawn(ev: Dictionary):
 	var aid = int(ev.get("agent_id", -1))
 	var tile = Vector2i(ev.get("tile", [0, 0])[0], ev.get("tile", [0, 0])[1])
 	if aid in _players and is_instance_valid(_players[aid]):
-		_players[aid].visible = true
+		_players[aid].set_alive()
 		_players[aid].set_tile_position(tile)
 		print("[Renderer] Player ", _player_names.get(aid, "?"), " respawned at ", tile)
 
@@ -338,18 +536,16 @@ func _ev_chat(ev: Dictionary):
 	var color_idx = _player_colors.get(aid, 0)
 	var color_str = AGENT_COLORS[color_idx % AGENT_COLORS.size()]
 
-	# Show speech bubble on player node
+	# Show speech bubble on player node (auto-hides after a few seconds)
 	if aid in _players and is_instance_valid(_players[aid]):
-		var player_node = _players[aid]
-		var speech_bubble = player_node.get_node("SpeechBubble")
-		if speech_bubble:
-			var label = speech_bubble.get_child(0)
-			label.text = message
-			speech_bubble.visible = true
+		_players[aid].show_message(message)
 
 	# Add to chat HUD
 	var bbcode = "[b][color=%s]%s[/color][/b]: %s" % [color_str, pname, message]
 	chat_box.add_message(bbcode, ev.get("elapsed_ms", -1.0))
+
+	# Track in the recent-actions list above the head
+	_record_action(aid, "say: " + message)
 
 # ── Combined per-agent actions ────────────────────────────────────────
 
@@ -379,8 +575,14 @@ func _ev_actions(ev: Dictionary):
 					else:
 						_players[aid].move_to_tile(to)
 				else:
-					# Lazy spawn — covers logs where game_start lacks players array
-					_spawn_player_node(aid, pname, to, aid % AGENT_COLORS.size())
+					# Lazy spawn — covers logs where game_start lacks players array.
+					# Spawn at the move's origin so the step animates correctly.
+					var from_data = act.get("from", {})
+					var spawn_tile: Vector2i = to
+					if from_data is Dictionary:
+						spawn_tile = Vector2i(from_data.get("x", 0), from_data.get("y", 0))
+					_spawn_player_node(aid, pname, spawn_tile, aid % AGENT_COLORS.size())
+				_record_action(aid, "move (%d,%d)" % [to.x, to.y])
 
 			"say":
 				var message: String = act.get("message", "")
@@ -390,20 +592,48 @@ func _ev_actions(ev: Dictionary):
 				var color_str = AGENT_COLORS[color_idx % AGENT_COLORS.size()]
 
 				if aid in _players and is_instance_valid(_players[aid]):
-					var player_node = _players[aid]
-					var speech_bubble = player_node.get_node("SpeechBubble")
-					if speech_bubble:
-						var label = speech_bubble.get_child(0)
-						label.text = message
-						speech_bubble.visible = true
+					_players[aid].show_message(message)
 
 				var bbcode = "[b][color=%s]%s[/color][/b]: %s" % [color_str, pname, message]
 				chat_box.add_message(bbcode, ev.get("elapsed_ms", -1.0))
+				_record_action(aid, "say: " + message)
 
 			"attack":
 				# Kill rendering is handled by the separate kill event.
 				# The attack sub-action just notes who was targeted.
-				pass
+				var target = act.get("target", "")
+				_record_action(aid, ("⚔ " + str(target)) if str(target) != "" else "⚔")
+
+			"kill":
+				# Victim becomes a visible corpse at their current tile
+				var victim_name: String = str(act.get("victim", act.get("target", "")))
+				if victim_name != "":
+					for vid in _players.keys():
+						if str(_player_names.get(vid, "")) == victim_name \
+								and is_instance_valid(_players[vid]):
+							_players[vid].set_dead()
+							break
+				_record_action(aid, "killed " + victim_name)
+
+			"vote":
+				_record_action(aid, "vote: " + str(act.get("voted_for", act.get("target", "?"))))
+
+			"report":
+				var rvictim: String = str(act.get("victim", act.get("target", "")))
+				_record_action(aid, "report: " + rvictim)
+				# The body is reported — remove the corpse from the world
+				for vid in _players.keys():
+					if str(_player_names.get(vid, "")) == rvictim \
+							and is_instance_valid(_players[vid]):
+						_players[vid].queue_free()
+						_players.erase(vid)
+						_player_names.erase(vid)
+						_player_colors.erase(vid)
+						break
+
+			_:
+				if not silent:
+					print("[Renderer]   untracked sub-action: ", atype)
 
 func _ev_vote_cast(ev: Dictionary):
 	"""Handle a vote_cast event (may contain combined actions from log format)."""

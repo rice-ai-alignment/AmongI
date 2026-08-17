@@ -1,11 +1,16 @@
 #!/bin/bash
-# Quick Python syntax check for agent/ and engine/
+# Syntax check (Python) + config validation for engine/
 cd "$(dirname "$0")"
-python3 -c "
+PY=${PY:-python3}
+
+echo "── syntax ──"
+$PY -c "
 import py_compile, sys, pathlib
 ok = True
 dirs = [pathlib.Path('.'), pathlib.Path('../agent')]
 for d in dirs:
+    if not d.exists():
+        continue
     for f in d.glob('*.py'):
         try:
             py_compile.compile(str(f), doraise=True)
@@ -13,8 +18,9 @@ for d in dirs:
             print(f'FAIL: {f}')
             print(e)
             ok = False
-if ok:
-    print('All Python files OK')
-else:
-    sys.exit(1)
-"
+sys.exit(0 if ok else 1)
+" || exit 1
+echo "All Python files OK"
+
+echo "── config validation ──"
+$PY validate_configs.py

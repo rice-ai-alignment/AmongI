@@ -27,11 +27,76 @@ try:
 except ImportError:
     HAS_FIRESTORE = False
 
-STUDIES_COLLECTION = os.getenv("FIRESTORE_COLLECTION", "studies")
+STUDIES_COLLECTION = "studies"
 STUDY_ID = os.getenv("STUDY_ID", "")
 EXPERIMENT_CODE = os.getenv("EXPERIMENT_CODE", "")
 FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED_PATH", "firebase-key.json")
+GCS_BUCKET = "raia-labs.firebasestorage.app"  # Firebase Storage bucket (gs://raia-labs.firebasestorage.app)
 _firestore_ready = False
+
+
+def _to_ms(v) -> Optional[int]:
+    """Convert a Firestore timestamp / datetime / ISO string to epoch ms."""
+    if v is None:
+        return None
+    try:
+        if hasattr(v, "timestamp"):          # Firestore datetime
+            return int(v.timestamp() * 1000)
+        if isinstance(v, str):
+            s = v.strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+    except Exception:
+        pass
+    return None
+
+
+def _upload_to_gcs(blob_path: str, data: str, content_type: str = "text/plain") -> Optional[str]:
+    """Upload a string to Firebase Storage via its REST API.
+
+    Uses the firebase-admin service account for auth (no google-cloud-storage
+    package needed) and returns the public download URL, or None on failure.
+    """
+    if not GCS_BUCKET:
+        return None
+    try:
+        import google.auth.transport.requests
+        import firebase_admin
+        from urllib.parse import quote
+        from urllib.request import Request, urlopen
+
+        # Token from the firebase-admin credential (firebase-key.json)
+        cred = firebase_admin.get_app().credential.get_credential()
+        cred.refresh(google.auth.transport.requests.Request())
+        token = cred.token
+        if not token:
+            print("[Bridge] Storage upload failed: no access token")
+            return None
+
+        encoded = quote(blob_path, safe="")
+        upload_url = f"https://firebasestorage.googleapis.com/v0/b/{GCS_BUCKET}/o?name={encoded}"
+        req = Request(
+            upload_url, data=data.encode("utf-8"), method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": content_type,
+            })
+        resp = json.loads(urlopen(req, timeout=60).read().decode("utf-8"))
+
+        # Public URL — the download token grants access, and storage.rules
+        # allows public reads for per-trial folders ({study}/{exp}/{game}/).
+        download_url = f"https://firebasestorage.googleapis.com/v0/b/{GCS_BUCKET}/o/{encoded}?alt=media"
+        tokens = (resp.get("downloadTokens") or "").split(",")
+        if tokens and tokens[0]:
+            download_url += f"&token={tokens[0]}"
+        return download_url
+    except Exception as e:
+        print(f"[Bridge] GCS upload failed for {blob_path}: {e}")
+        return None
 
 
 def check_study_experiment(study: str, experiment: str) -> bool:
@@ -98,7 +163,6 @@ class LogStore:
         self._file_pos: int = 0
         self._pushed_game_ids: set = set()
         self._pushed_config_game_ids: set = set()
-        self._pushed_session_config: bool = False
         self._session_dir: Optional[str] = None
 
     def _find_latest_log(self) -> Optional[str]:
@@ -114,11 +178,14 @@ class LogStore:
             return
         self._session_log_path = path
         self._session_dir = os.path.dirname(path)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        session_subdir = os.path.join(os.path.dirname(path), stem)
+        if os.path.isdir(session_subdir):
+            self._session_dir = session_subdir
         print(f"[Bridge] Tailing: {path}")
         with self.lock:
             self._read_to_end(path)
         print(f"[Bridge] Initial sweep: {len(self.games)} games")
-        self._push_session_config()
 
     def tail(self):
         """Check for new session logs and read new lines."""
@@ -127,12 +194,13 @@ class LogStore:
         if latest and latest != self._session_log_path:
             print(f"[Bridge] New session: {latest}")
             self._session_log_path = latest
-            self._session_dir = os.path.dirname(latest)
+            # Session dir is the subdirectory named after the session file stem
+            # e.g. log/SESSION-ts.jsonl → log/SESSION-ts/
+            stem = os.path.splitext(os.path.basename(latest))[0]
+            self._session_dir = os.path.join(os.path.dirname(latest), stem)
             self._file_pos = 0
-            self._pushed_session_config = False
             with self.lock:
                 self._read_to_end(latest)
-            self._push_session_config()
             return
 
         if not self._session_log_path:
@@ -199,23 +267,6 @@ class LogStore:
         sid = self.session_id or "unknown"
         return db.collection(STUDIES_COLLECTION).document(sid.replace("SESSION-", "exp-"))
 
-    def _push_session_config(self):
-        """Push session-level config.json to the experiment doc."""
-        if not _firestore_ready or self._pushed_session_config or not self._session_dir:
-            return
-        config_path = os.path.join(self._session_dir, "config.json")
-        if not os.path.exists(config_path):
-            return
-        try:
-            with open(config_path, "r") as f:
-                config = json.load(f)
-            doc_ref = self._experiment_doc_ref()
-            doc_ref.set({"config": config, "config_updated_at": datetime.now(timezone.utc).isoformat()}, merge=True)
-            self._pushed_session_config = True
-            print(f"[Bridge] Pushed session config to {doc_ref.path}")
-        except Exception as e:
-            print(f"[Bridge] Session config push failed: {e}")
-
     def _push_config_for_game(self, game_id: str, game_ref):
         """Push per-game config.json to Firestore if present."""
         if not _firestore_ready or not self._session_dir:
@@ -234,6 +285,18 @@ class LogStore:
         except Exception as e:
             print(f"[Bridge] Config push failed: {e}")
 
+    def _cleared_at_ms(self) -> Optional[int]:
+        """Epoch ms of the experiment's cleared_at field, or None."""
+        if not _firestore_ready:
+            return None
+        try:
+            doc = self._experiment_doc_ref().get()
+            if not doc.exists:
+                return None
+            return _to_ms(doc.to_dict().get("cleared_at"))
+        except Exception:
+            return None
+
     def _push_game(self, recap: dict):
         if not _firestore_ready:
             return
@@ -241,15 +304,35 @@ class LogStore:
             game_id = recap.get("game_id", "unknown")
             if game_id in self._pushed_game_ids:
                 return
+
+            # If the experiment data was cleared after this game ended,
+            # the result belongs to a wiped run — don't resurrect it.
+            cleared_ms = self._cleared_at_ms()
+            ended_ms = _to_ms(recap.get("ended_at"))
+            if cleared_ms is not None and (ended_ms is None or ended_ms <= cleared_ms):
+                print(f"[Bridge] Skipping {game_id} — experiment data was cleared after it ended")
+                return
+
+            # Local files live under the EventStore game id (e.g. GAME-001),
+            # while the pushed doc id may be trial-based (e.g. TRIAL-000).
+            log_game_id = recap.get("log_game_id") or game_id
             doc_ref = self._experiment_doc_ref()
             game_ref = doc_ref.collection("games").document(game_id)
             game_ref.set(recap)
 
-            # Push per-game trace and config if available
-            self._push_trace(game_id, game_ref)
-            self._push_config_for_game(game_id, game_ref)
+            # Push per-game trace, logs, and config if available
+            self._push_trace(log_game_id, game_id, game_ref)
+            self._push_logs(log_game_id, game_id)
+            self._push_config_for_game(log_game_id, game_ref)
 
-            stats = self._compute_stats()
+            # Stats must not resurrect pre-clear games either
+            games_after_clear = self.games
+            if cleared_ms is not None:
+                games_after_clear = [
+                    g for g in self.games
+                    if (ms := _to_ms(g.get("ended_at"))) is not None and ms > cleared_ms
+                ]
+            stats = compute_stats(games_after_clear, self.session_id)
             doc_ref.set(stats, merge=True)
             self._pushed_game_ids.add(game_id)
             print(f"[Bridge] Pushed {game_id} to {doc_ref.path} "
@@ -257,17 +340,51 @@ class LogStore:
         except Exception as e:
             print(f"[Bridge] Firestore push failed: {e}")
 
-    def _push_trace(self, game_id: str, game_ref):
-        """Push per-game trace.jsonl to Firestore under the game document."""
+    def _push_logs(self, log_game_id: str, game_id: str):
+        """Upload per-trial raw logs (game JSONL + session JSONL) to GCS."""
+        if not self._session_dir or not GCS_BUCKET:
+            return
+        study = os.getenv("STUDY_ID", "") or STUDY_ID
+        exp = os.getenv("EXPERIMENT_CODE", "") or EXPERIMENT_CODE
+        if not study or not exp:
+            return
+
+        # Per-game event log: {session_dir}/GAME-001.jsonl
+        game_log = os.path.join(self._session_dir, f"{log_game_id}.jsonl")
+        if os.path.exists(game_log):
+            try:
+                with open(game_log, "r") as f:
+                    data = f.read()
+                gcs_path = f"{study}/{exp}/{game_id}/game.jsonl"
+                url = _upload_to_gcs(gcs_path, data, "application/jsonl")
+                if url:
+                    print(f"[Bridge] Game log → GCS: {url}")
+            except Exception as e:
+                print(f"[Bridge] Game log upload failed: {e}")
+
+        # Session event log: {log_dir}/SESSION-*.jsonl (one session per trial)
+        if self._session_log_path and os.path.exists(self._session_log_path):
+            try:
+                with open(self._session_log_path, "r") as f:
+                    data = f.read()
+                gcs_path = f"{study}/{exp}/{game_id}/session.jsonl"
+                url = _upload_to_gcs(gcs_path, data, "application/jsonl")
+                if url:
+                    print(f"[Bridge] Session log → GCS: {url}")
+            except Exception as e:
+                print(f"[Bridge] Session log upload failed: {e}")
+
+    def _push_trace(self, log_game_id: str, game_id: str, game_ref):
+        """Push per-game trace.jsonl to GCS (primary) or Firestore (fallback)."""
         if not self._session_dir:
             return
-        trace_path = os.path.join(self._session_dir, game_id, "trace.jsonl")
+        trace_path = os.path.join(self._session_dir, log_game_id, "trace.jsonl")
         if not os.path.exists(trace_path):
             return
         try:
             with open(trace_path, "r") as f:
                 trace_data = f.read()
-            # Parse pretty-printed JSON entries (separated by blank lines)
+            # Parse pretty-printed JSON entries for summary
             trace_events = []
             for block in trace_data.split("\n\n"):
                 block = block.strip()
@@ -284,9 +401,28 @@ class LogStore:
                                max((e.get("tick", 0) for e in trace_events), default=0)],
             }
             game_ref.collection("trace").document("summary").set(summary)
-            # Store raw trace text
-            game_ref.collection("trace").document("raw").set({"data": trace_data})
-            print(f"[Bridge] Pushed trace for {game_id} ({len(trace_events)} events)")
+
+            # Upload raw trace to GCS, store public URL + size in Firestore
+            study = os.getenv("STUDY_ID", "") or STUDY_ID
+            exp = os.getenv("EXPERIMENT_CODE", "") or EXPERIMENT_CODE
+            gcs_path = f"{study}/{exp}/{game_id}/trace.jsonl"
+            public_url = _upload_to_gcs(gcs_path, trace_data, "application/jsonl")
+            raw_doc = {
+                "size": len(trace_data),
+                "gcs_path": gcs_path,
+            }
+            if public_url:
+                raw_doc["url"] = public_url
+                print(f"[Bridge] Trace → GCS: {public_url}")
+            else:
+                # Fallback: store inline in Firestore (legacy, limited to ~1 MiB)
+                if len(trace_data) < 900_000:
+                    raw_doc["data"] = trace_data
+                else:
+                    print(f"[Bridge] Trace too large for Firestore fallback "
+                          f"({len(trace_data)} bytes) — set GCS_BUCKET env var")
+            game_ref.collection("trace").document("raw").set(raw_doc)
+            print(f"[Bridge] Pushed trace for {game_id} ({len(trace_events)} events, {len(trace_data)} bytes)")
         except Exception as e:
             print(f"[Bridge] Trace push failed: {e}")
 

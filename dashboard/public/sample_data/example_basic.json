@@ -3,8 +3,7 @@
   "description": "5 agents (4 crew + 1 impostor) on a 16×16 map with kills, body reports, and voting. Uses the new game-module architecture.",
   "type": "Game",
   "class": "AmongUsGame",
-  "game_count": 5,
-  "map": {"type": "Map", "class": "SquareMap", "size": 16},
+  "trial_count": 5,
   "agents": {
     "type": "AgentConfig",
     "class": "AgentConfig",
@@ -37,6 +36,8 @@
     {
       "type": "GamePhase", "class": "PlayPhase",
       "timeout": 600, "tick_interval": 3,
+      "position_mode": {"type": "Position", "class": "TilePosition",
+        "map": {"type": "Map", "class": "SquareMap", "size": 16}},
       "actions": [
         {"type": "AgentAction", "class": "MoveAction", "range": 2, "available_to": ["Crewmate", "Imposter"]},
         {"type": "AgentAction", "class": "ChatAction", "available_to": ["Crewmate", "Imposter"]},

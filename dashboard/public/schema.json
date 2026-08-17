@@ -3,7 +3,7 @@
     "description": "Map components",
     "classes": {
       "SquareMap": {
-        "description": "A square arena \u2014 open interior with a 1-tile border wall.",
+        "description": "A square arena \u2014 every tile walkable.",
         "params": {
           "size": {
             "type": "int",
@@ -245,6 +245,11 @@
             "type": "str",
             "default": "''",
             "description": "System prompt for this agent type"
+          },
+          "model": {
+            "type": "str",
+            "default": "''",
+            "description": "OpenRouter model ID for this agent type (overrides default)"
           },
           "count": {
             "type": "int",
@@ -720,20 +725,15 @@
             "description": "WinCondition rules",
             "element_type": "ExperimentComponent"
           },
-          "map": {
-            "type": "component",
-            "default": null,
-            "description": "Map component"
-          },
           "agents": {
             "type": "component",
             "default": null,
             "description": "AgentConfig for this game"
           },
-          "game_count": {
+          "trial_count": {
             "type": "int",
             "default": "1",
-            "description": "Max games to play"
+            "description": "Number of trials (individual games) to run"
           }
         },
         "source": "games/among_us/game.py"
@@ -761,6 +761,11 @@
             "default": "[]",
             "description": "Actions available during this phase",
             "element_type": "ExperimentComponent"
+          },
+          "position_mode": {
+            "type": "component",
+            "default": null,
+            "description": "Position mode for this phase (e.g. TilePosition)"
           }
         },
         "source": "games/among_us/phases.py"
@@ -783,6 +788,11 @@
             "default": "[]",
             "description": "Actions available during this phase",
             "element_type": "ExperimentComponent"
+          },
+          "position_mode": {
+            "type": "component",
+            "default": null,
+            "description": "Position mode for this phase (e.g. TilePosition)"
           },
           "min_time": {
             "type": "float",

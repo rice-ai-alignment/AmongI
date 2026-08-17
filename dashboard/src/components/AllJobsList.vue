@@ -1,7 +1,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useFirestore } from "../composables/useFirestore.js";
-import TerminalCard from "./TerminalCard.vue";
+import AsciiTable from "./AsciiTable.vue";
+import JobPopup from "./JobPopup.vue";
 
 const { allJobs, watchAllJobs, stopAllJobsWatch } = useFirestore();
 
@@ -9,101 +10,125 @@ onMounted(() => { watchAllJobs(); });
 onUnmounted(() => { stopAllJobsWatch(); });
 
 const now = ref(Date.now());
-const tick = setInterval(() => { now.value = Date.now(); }, 1000);
-onUnmounted(() => clearInterval(tick));
+setInterval(() => { now.value = Date.now(); }, 1000);
 
-const showAllHistory = ref(false);
-const INITIAL = 10;
+const showAll = ref(false);
+const LIMIT = 10;
+const selectedJob = ref(null);
 
-const activeJobs = computed(() =>
-  allJobs.value.filter(j => ["queued", "claimed", "running"].includes(j.status))
-);
-const allHistory = computed(() =>
-  allJobs.value.filter(j => ["completed", "failed", "cancelled"].includes(j.status))
-);
-const visibleHistory = computed(() =>
-  showAllHistory.value ? allHistory.value : allHistory.value.slice(0, INITIAL)
-);
-const hiddenCount = computed(() =>
-  Math.max(0, allHistory.value.length - INITIAL)
-);
+function cleanError(err) {
+  if (!err) return "";
+  return err.replace(/\s+/g, " ").trim();
+}
+
+const columns = [
+  { key: "status",  header: "STATUS" },
+  { key: "target",  header: "STUDY/EXP" },
+  { key: "server",  header: "SERVER" },
+  { key: "time",    header: "TIME" },
+  { key: "result",  header: "RESULT", align: "right" },
+];
 
 function fmtTime(d) {
-  if (!d) return "-";
+  if (!d) return null;
   const t = d.toDate ? d.toDate() : new Date(d);
   return t.toLocaleString("sv").replace("T", " ").slice(0, 16);
 }
 
-function elapsed(started) {
-  if (!started) return "";
-  const t = started.toDate ? started.toDate().getTime() : new Date(started).getTime();
+function elapsed(s) {
+  if (!s) return null;
+  const t = s.toDate ? s.toDate().getTime() : new Date(s).getTime();
   const sec = Math.floor((now.value - t) / 1000);
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-  return `${Math.floor(sec / 3600)}h`;
+  let out;
+  if (sec < 60) out = `${sec}s`;
+  else if (sec < 3600) out = `${Math.floor(sec / 60)}m`;
+  else out = `${Math.floor(sec / 3600)}h`;
+  // Fixed width so ticking timers never change column/box width
+  return out.padStart(5);
 }
 
-function statusClass(s) {
-  return { queued: "a", claimed: "g", running: "g", completed: "", failed: "r", cancelled: "r" }[s] || "dim";
+function trunc(s, n) { return s && s.length > n ? s.slice(0, n) + "…" : s || "-"; }
+
+const statusIcon = { queued: "○", claimed: "◐", running: "●", completed: "✓", failed: "✗", cancelled: "⊘" };
+const statusCls  = { queued: "a", claimed: "g", running: "g", completed: "g", failed: "r", cancelled: "r" };
+
+function formatCell(key, val, row) {
+  if (key === "status") return { text: `${statusIcon[row._status] || "?"} ${row._status}`, cls: statusCls[row._status] };
+  if (key === "target") return { text: trunc(row.study_id, 10) + "/" + trunc(row.experiment_code, 12) };
+  if (key === "server") return { text: trunc(row.claimed_by, 14) };
+  if (key === "time") {
+    if (row._status === "completed" || row._status === "failed") return { text: fmtTime(row.finished_at) };
+    if (row.started_at) return { text: elapsed(row.started_at), cls: "g" };
+    return { text: elapsed(row.created_at), cls: "dim" };
+  }
+  if (key === "result") {
+    const parts = [];
+    const done = row.result?.trials_completed ?? row.result?.games_completed ?? row.result?.games;
+    if (done != null) parts.push(done + "t");
+    if (row.error) {
+      const err = cleanError(row.error);
+      return { text: err.slice(0, 60) + (err.length > 60 ? "[...]" : ""), cls: "r" };
+    }
+    return { text: parts.join(" ") || "-" };
+  }
+  return { text: String(val ?? "-") };
 }
 
-function statusIcon(s) {
-  return { queued: "○", claimed: "◐", running: "●", completed: "✓", failed: "✗", cancelled: "⊘" }[s] || "?";
+function onJobRowClick(row) {
+  if (!row) return;
+  selectedJob.value = row;
 }
 
-function trunc(s, n) {
-  if (!s) return "-";
-  return s.length > n ? s.slice(0, n) + "..." : s;
-}
+const allRows = computed(() =>
+  allJobs.value.map(j => ({
+    ...j,
+    _status: j.status || "?",
+    _fullError: j.error || "",
+  }))
+);
+
+const activeRows = computed(() => allRows.value.filter(r => ["queued", "claimed", "running"].includes(r._status)));
+const historyRows = computed(() => allRows.value.filter(r => ["completed", "failed", "cancelled"].includes(r._status)));
+const visibleHistory = computed(() => showAll.value ? historyRows.value : historyRows.value.slice(0, LIMIT));
+const hiddenCount = computed(() => Math.max(0, historyRows.value.length - LIMIT));
 </script>
 
 <template>
   <div class="all-jobs">
-    <TerminalCard title="active jobs" :min-width="80" :collapsible="false">
-      <div v-if="!activeJobs.length" class="dim">(none)</div>
-      <div v-for="j in activeJobs" :key="j.id" class="job-row">
-        <span :class="statusClass(j.status)" class="j-status">{{ statusIcon(j.status) }} {{ j.status }}</span>
-        <span class="dim j-study">{{ trunc(j.study_id, 12) }}/{{ trunc(j.experiment_code, 14) }}</span>
-        <span class="spacer"></span>
-        <span v-if="j.claimed_by" class="dim j-server">{{ trunc(j.claimed_by, 14) }}</span>
-        <span v-if="j.started_at" class="g j-time">{{ elapsed(j.started_at) }}</span>
-        <span v-else class="dim j-time">{{ elapsed(j.created_at) }}</span>
-      </div>
-    </TerminalCard>
+    <AsciiTable
+      title="active jobs"
+      :columns="columns"
+      :rows="activeRows"
+      :formatCell="formatCell"
+      :minWidth="72"
+      :collapsible="false"
+      emptyText="(none)"
+      :clickableRows="true"
+      noType
+      @rowClick="onJobRowClick"
+    />
+    <AsciiTable
+      title="job history"
+      :columns="columns"
+      :rows="visibleHistory"
+      :formatCell="formatCell"
+      :minWidth="72"
+      :collapsible="true"
+      emptyText="(none)"
+      noType
+      :clickableRows="true"
+      @rowClick="onJobRowClick"
+    />
+    <div v-if="hiddenCount" class="dim expand" @click="showAll = !showAll">
+      {{ showAll ? '[ collapse ]' : `[ show all (${hiddenCount} more) ]` }}
+    </div>
 
-    <TerminalCard title="job history" :min-width="80" :collapsible="true">
-      <div v-if="!allHistory.length" class="dim">(none)</div>
-      <div v-for="j in visibleHistory" :key="j.id" class="job-row">
-        <span :class="statusClass(j.status)" class="j-status">{{ statusIcon(j.status) }} {{ j.status }}</span>
-        <span class="dim j-study">{{ trunc(j.study_id, 12) }}/{{ trunc(j.experiment_code, 14) }}</span>
-        <span class="spacer"></span>
-        <span v-if="j.claimed_by" class="dim j-server">{{ trunc(j.claimed_by, 14) }}</span>
-        <span class="dim j-time">{{ fmtTime(j.finished_at) }}</span>
-        <span v-if="j.result?.games" class="dim">· {{ j.result.games }}g</span>
-        <span v-if="j.error" class="r j-err">· {{ j.error.slice(0, 50) }}</span>
-      </div>
-      <div v-if="hiddenCount" class="expand-row dim" @click="showAllHistory = !showAllHistory">
-        {{ showAllHistory ? '[ collapse ]' : `[ show all (${hiddenCount} more) ]` }}
-      </div>
-    </TerminalCard>
+    <JobPopup :job="selectedJob" @close="selectedJob = null" />
   </div>
 </template>
 
 <style scoped>
-.all-jobs { display: flex; flex-direction: column; gap: var(--sp-sm); }
-.job-row {
-  display: flex; align-items: baseline; gap: var(--sp-sm);
-  font-size: var(--fs-base); padding: var(--sp-xxs) 0;
-  border-bottom: var(--border-hair); overflow: hidden;
-}
-.job-row:last-child { border-bottom: none; }
-.j-status { flex-shrink: 0; width: 10ch; }
-.j-study  { flex-shrink: 0; width: 28ch; overflow: hidden; white-space: nowrap; }
-.j-server { flex-shrink: 0; width: 16ch; overflow: hidden; white-space: nowrap; }
-.j-time   { flex-shrink: 0; width: 16ch; }
-.j-err    { flex-shrink: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
-.expand-row {
-  font-size: var(--fs-sm); cursor: pointer; padding-top: var(--sp-xxs);
-}
-.expand-row:hover { color: var(--green); }
+.all-jobs { display: flex; flex-direction: column; }
+.expand { font-size: var(--fs-sm); cursor: pointer; padding: var(--sp-xxs) var(--sp-sm); }
+.expand:hover { color: var(--green); }
 </style>

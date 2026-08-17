@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import shutil
 import socket
 import subprocess
@@ -24,6 +25,34 @@ from datetime import datetime, timezone
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Optional imports — server_handler requires these, but fail gracefully if missing
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
+    import firebase_admin
+    from firebase_admin import firestore
+except ImportError:
+    firebase_admin = None
+    firestore = None
+
+try:
+    import bridge_server
+    from bridge_server import (
+        LogStore, init_firestore, _to_ms,
+        check_study_experiment, STUDIES_COLLECTION,
+    )
+except ImportError:
+    bridge_server = None
+    LogStore = None
+
+try:
+    import websockets
+except ImportError:
+    websockets = None
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -52,7 +81,8 @@ def _get_gpu_stats() -> tuple[Optional[float], Optional[float]]:
 
 def _get_cpu_mem() -> tuple[float, float]:
     """Return (cpu_percent, memory_percent)."""
-    import psutil
+    if psutil is None:
+        return 0.0, 0.0
     return psutil.cpu_percent(interval=None), psutil.virtual_memory().percent
 
 
@@ -60,8 +90,6 @@ def _get_cpu_mem() -> tuple[float, float]:
 
 def _firestore_client():
     """Return a Firestore client (requires firebase_admin initialized)."""
-    import firebase_admin
-    from firebase_admin import firestore
     return firestore.client()
 
 
@@ -86,7 +114,8 @@ class ServerHandler:
     def __init__(self, name: str, heartbeat_interval: float = 30.0,
                  poll_interval: float = 5.0, log_dir: str = "../log",
                  render_port: int = 8081, funnel: bool = False,
-                 study_filter: str = ""):
+                 study_filter: str = "", description: str = "",
+                 workers: int = 1):
         self.server_id = name
         self._heartbeat_interval = heartbeat_interval
         self._poll_interval = poll_interval
@@ -94,8 +123,10 @@ class ServerHandler:
         self._render_port = render_port
         self._funnel = funnel
         self._study_filter = study_filter
+        self._description = description
+        self._max_workers = max(1, workers)
 
-        self._current_job_id: Optional[str] = None
+        self._active_jobs: set = set()
         self._jobs_completed: int = 0
         self._gpu_cache: tuple[Optional[float], Optional[float]] = (None, None)
         self._gpu_cache_age: int = 999
@@ -107,13 +138,15 @@ class ServerHandler:
 
     async def register(self):
         """Register this server in Firestore (auto-register on heartbeat)."""
-        import psutil
+        from version import get_version
         hostname = socket.gethostname()
         cpu_percent, mem_percent = _get_cpu_mem()
         gpu, gpu_mem = _get_gpu_stats()
         doc = {
             "name": self.server_id,
             "hostname": hostname,
+            "description": self._description,
+            "version": get_version(),
             "status": "online",
             "last_seen": datetime.now(timezone.utc),
             "heartbeat_interval_sec": self._heartbeat_interval,
@@ -123,14 +156,14 @@ class ServerHandler:
             "gpu_mem_percent": gpu_mem,
             "cpu_count": psutil.cpu_count(),
             "memory_total": psutil.virtual_memory().total,
-            "current_job_id": None,
+            "active_job_ids": [],
+            "max_workers": self._max_workers,
             "jobs_completed": 0,
             "render_active": False,
             "funnel_url": None,
-            "version": "1.0",
         }
         _servers_col().document(self.server_id).set(doc, merge=True)
-        print(f"[ServerHandler] Registered as '{self.server_id}' (hostname={hostname})")
+        print(f"[ServerHandler] Registered as '{self.server_id}' ({self._max_workers} workers, hostname={hostname})")
 
     # ── Heartbeat ────────────────────────────────────────────────────
 
@@ -147,13 +180,13 @@ class ServerHandler:
                     self._gpu_cache = _get_gpu_stats()
 
                 update = {
-                    "status": "busy" if self._current_job_id else "online",
+                    "status": "busy" if self._active_jobs else "online",
                     "last_seen": datetime.now(timezone.utc),
                     "cpu_percent": cpu_percent,
                     "memory_percent": mem_percent,
                     "gpu_percent": self._gpu_cache[0],
                     "gpu_mem_percent": self._gpu_cache[1],
-                    "current_job_id": self._current_job_id,
+                    "active_job_ids": list(self._active_jobs),
                     "jobs_completed": self._jobs_completed,
                     "render_active": self._render_relay is not None,
                     "funnel_url": self._funnel_url,
@@ -205,7 +238,6 @@ class ServerHandler:
             relay = RenderRelay("0.0.0.0", self._render_port)
             self._render_relay = relay  # store ref for cleanup
             # Start as background task
-            import websockets
             async def _serve():
                 async with websockets.serve(relay._handler, relay.host, relay.port):
                     print(f"[ServerHandler] Render relay on {relay.host}:{relay.port}")
@@ -246,11 +278,44 @@ class ServerHandler:
             print(f"[ServerHandler] Tailscale funnel setup failed: {e}")
             self._funnel_url = None
 
+    async def _maybe_start_render_for_job(self, job_id: str):
+        """Start the render relay (+funnel) if the dashboard requested it.
+
+        The dashboard sets render_requested=true on the job; the server
+        starts the relay, publishes the URL back to the job doc, and
+        clears the flag. Called from the tail loop and before each trial,
+        so a request made mid-job takes effect for the next trial (the
+        engine attaches its RenderClient at trial start)."""
+        try:
+            job_ref = _jobs_col().document(job_id)
+            job_doc = job_ref.get()
+            if not job_doc.exists:
+                return
+            data = job_doc.to_dict()
+            if not data.get("render_requested"):
+                return
+            if self._render_relay is None:
+                await self._start_render_relay()
+            if self._funnel and not self._funnel_url:
+                await self._start_funnel()
+            job_ref.update({
+                "render_requested": firestore.DELETE_FIELD,
+                "render": {
+                    "active": True,
+                    "url": self._funnel_url,
+                    "port": self._render_port,
+                },
+                "updated_at": datetime.now(timezone.utc),
+            })
+            print(f"[ServerHandler] Render exposed for job {job_id}: "
+                  f"url={self._funnel_url or 'none (direct ws only)'}")
+        except Exception as e:
+            print(f"[ServerHandler] Render request handling failed: {e}")
+
     # ── Job processing ───────────────────────────────────────────────
 
     async def recover_stale_jobs(self):
         """On startup, reset any jobs stuck in 'claimed' or 'running' from a crash."""
-        from firebase_admin import firestore
         try:
             jobs_col = _jobs_col()
             for status in ("claimed", "running"):
@@ -271,19 +336,48 @@ class ServerHandler:
         except Exception as e:
             print(f"[ServerHandler] Stale job recovery failed: {e}")
 
-    async def job_loop(self):
-        """Poll for queued jobs and process them one at a time."""
-        await self.recover_stale_jobs()
+    async def recover_stale_trials(self):
+        """On startup, reset 'running' trials claimed more than 30 min ago."""
+        try:
+            db = _firestore_client()
+            cutoff = datetime.now(timezone.utc)
+            for study_doc in db.collection(STUDIES_COLLECTION).stream():
+                for exp_doc in study_doc.reference.collection("experiments").stream():
+                    data = exp_doc.to_dict()
+                    claimed = dict(data.get("trial_claimed_at") or {})
+                    trials = list(data.get("trials") or [])
+                    changed = False
+                    for idx_str, ts_str in list(claimed.items()):
+                        try:
+                            idx = int(idx_str)
+                            ts = datetime.fromisoformat(ts_str)
+                        except (ValueError, TypeError):
+                            continue
+                        if ((cutoff - ts).total_seconds() > 1800
+                                and idx < len(trials) and trials[idx] == "running"):
+                            trials[idx] = "pending"
+                            del claimed[idx_str]
+                            changed = True
+                    if changed:
+                        exp_doc.reference.update({
+                            "trials": trials,
+                            "trial_claimed_at": claimed,
+                        })
+                        print(f"[ServerHandler] Recovered stale trials on "
+                              f"{study_doc.id}/{exp_doc.id}")
+        except Exception as e:
+            print(f"[ServerHandler] Stale trial recovery failed: {e}")
 
+    async def _job_worker(self):
+        """Single worker: poll, claim, run, repeat."""
         while not self._shutting_down:
-            if self._current_job_id:
+            if len(self._active_jobs) >= self._max_workers:
                 await asyncio.sleep(self._poll_interval)
                 continue
 
-            from firebase_admin import firestore
+            job_id = None
             try:
                 jobs_col = _jobs_col()
-                # Query oldest queued job
                 query = jobs_col.where(filter=firestore.FieldFilter("status", "==", "queued")) \
                     .order_by("created_at").limit(1)
                 results = list(query.stream())
@@ -295,76 +389,59 @@ class ServerHandler:
                 job = job_doc.to_dict()
                 job_id = job_doc.id
 
-                # If study filter is set, skip jobs for other studies
                 if self._study_filter and job.get("study_id") != self._study_filter:
                     await asyncio.sleep(self._poll_interval)
                     continue
 
-                # ── Validate ────────────────────────────────────
                 created_by = job.get("created_by", "")
                 if created_by:
                     user_doc = _users_col().document(created_by).get()
                     if not user_doc.exists or not user_doc.to_dict().get("can_run_experiments"):
-                        # Permission denied
                         job_doc.reference.update({
                             "status": "failed",
-                            "error": "permission denied: user lacks can_run_experiments flag",
+                            "error": "permission denied",
                             "finished_at": datetime.now(timezone.utc),
                         })
-                        print(f"[ServerHandler] Job {job_id}: permission denied for user {created_by}")
+                        print(f"[ServerHandler] Job {job_id}: permission denied")
                         continue
 
                 study_id = job.get("study_id", "")
                 exp_code = job.get("experiment_code", "")
                 if study_id and exp_code:
-                    from bridge_server import check_study_experiment
                     if not check_study_experiment(study_id, exp_code):
                         job_doc.reference.update({
                             "status": "failed",
-                            "error": "study/experiment not found in Firestore",
+                            "error": "study/experiment not found",
                             "finished_at": datetime.now(timezone.utc),
                         })
-                        print(f"[ServerHandler] Job {job_id}: study/experiment not found ({study_id}/{exp_code})")
                         continue
 
-                # ── Claim transactionally ──────────────────────
-                # Use a Firestore transaction to atomically claim the job,
-                # guarding against two servers racing on the same queued job.
-                from firebase_admin import firestore as _fs
                 db = _firestore_client()
 
-                @_fs.transactional
+                @firestore.transactional
                 def _claim_txn(txn, ref):
                     snap = ref.get(transaction=txn)
-                    if not snap.exists:
-                        return False
-                    data = snap.to_dict()
-                    if data.get("status") != "queued":
-                        return False
-                    txn.update(ref, {
-                        "status": "claimed",
-                        "claimed_by": self.server_id,
-                        "claimed_at": datetime.now(timezone.utc),
-                    })
+                    if not snap.exists: return False
+                    if snap.to_dict().get("status") != "queued": return False
+                    txn.update(ref, {"status": "claimed",
+                                     "claimed_by": self.server_id,
+                                     "claimed_at": datetime.now(timezone.utc)})
                     return True
 
-                claimed = _claim_txn(db.transaction(), job_doc.reference)
-                if not claimed:
-                    continue  # Another server claimed it
+                if not _claim_txn(db.transaction(), job_doc.reference):
+                    await asyncio.sleep(self._poll_interval)
+                    continue
 
-                self._current_job_id = job_id
+                self._active_jobs.add(job_id)
                 print(f"[ServerHandler] Claimed job {job_id}: {study_id}/{exp_code}")
 
-                # ── Update to running ─────────────────────────
                 job_doc.reference.update({
                     "status": "running",
                     "started_at": datetime.now(timezone.utc),
                 })
 
-                # ── Run ───────────────────────────────────────
                 result = await self._run_job(job_id, job)
 
-                # ── Report ────────────────────────────────────
                 job_doc.reference.update({
                     "status": "completed",
                     "result": result,
@@ -372,26 +449,33 @@ class ServerHandler:
                 })
                 self._jobs_completed += 1
                 print(f"[ServerHandler] Job {job_id} completed: {result.get('games', 0)} games")
-
-                # Log usage
                 self._log_usage(job_id, job, result)
 
-            except Exception as e:
+            except Exception:
                 trace = traceback.format_exc()
                 print(f"[ServerHandler] Job error: {trace}")
-                try:
-                    if self._current_job_id:
-                        _jobs_col().document(self._current_job_id).update({
-                            "status": "failed",
-                            "error": trace,
+                if job_id:
+                    try:
+                        _jobs_col().document(job_id).update({
+                            "status": "failed", "error": trace,
                             "finished_at": datetime.now(timezone.utc),
                         })
-                except Exception:
-                    pass
+                    except Exception: pass
             finally:
-                self._current_job_id = None
+                if job_id:
+                    self._active_jobs.discard(job_id)
+                await asyncio.sleep(self._poll_interval)
 
-            await asyncio.sleep(self._poll_interval)
+    async def job_loop(self):
+        """Spawn N workers to process jobs concurrently."""
+        await self.recover_stale_jobs()
+        await self.recover_stale_trials()
+        tasks = [asyncio.create_task(self._job_worker())
+                 for _ in range(self._max_workers)]
+        print(f"[ServerHandler] {self._max_workers} job workers started")
+        for t in tasks:
+            try: await t
+            except asyncio.CancelledError: pass
 
     def _log_usage(self, job_id: str, job: dict, result: dict):
         """Log job completion to server_usage collection."""
@@ -407,15 +491,19 @@ class ServerHandler:
                 "started_at": job.get("started_at"),
                 "completed_at": datetime.now(timezone.utc),
                 "token_count": 0,  # TODO: extract from trace
-                "game_count": result.get("games", 0),
+                "trial_count": result.get("trials_completed", 0),
                 "status": "completed",
             })
         except Exception:
             pass
 
     async def _run_job(self, job_id: str, job: dict) -> dict:
-        """Run a single experiment job. Returns result summary dict."""
-        max_games = job.get("max_games", 1)
+        """Process a job by claiming and running individual trials (one game each).
+
+        The experiment doc holds a ``trials`` array of per-index statuses.
+        Each worker claims a random pending index via a Firestore transaction
+        (auto-retried on contention), waits 0-5s, then runs ONE game for it.
+        """
         study_id = job.get("study_id", "")
         exp_code = job.get("experiment_code", "")
 
@@ -429,21 +517,24 @@ class ServerHandler:
 
         # ── Load config from experiment doc ────────────────────
         from experiment import build_experiment_from_dict
-        from bridge_server import _firestore_ready, STUDIES_COLLECTION
 
         config_data = job.get("config", {})  # fallback for old jobs
         config_path = f"{STUDIES_COLLECTION}/{study_id}/experiments/{exp_code}"
-        if _firestore_ready and study_id and exp_code:
-            from firebase_admin import firestore as _fs
+        if study_id and exp_code:
             try:
-                db = _fs.client()
+                db = _firestore_client()
                 exp_doc = db.collection(STUDIES_COLLECTION).document(study_id) \
                           .collection("experiments").document(exp_code).get()
                 if exp_doc.exists:
                     stored = exp_doc.to_dict().get("config")
                     if stored:
                         config_data = stored
-                        print(f"[ServerHandler] Loaded config from {config_path}")
+                        keys = ",".join(sorted(stored.keys())) if isinstance(stored, dict) else "?"
+                        print(f"[ServerHandler] Loaded config from {config_path}: "
+                              f"{stored.get('type', '?')}::{stored.get('class', '?')} "
+                              f"trial_count={stored.get('trial_count')} keys=[{keys}]")
+                    else:
+                        print(f"[ServerHandler] Experiment doc has no 'config' field: {config_path}")
                 else:
                     print(f"[ServerHandler] Experiment doc not found: {config_path}")
             except Exception as e:
@@ -461,12 +552,213 @@ class ServerHandler:
         config, free_roam, voting, win_conditions, position_mode, map_data, agent_types = \
             experiment_to_runtime(exp)
 
-        # ── Engine ────────────────────────────────────────────
+        trial_count = exp.trial_count or 1
+        exp_ref = _firestore_client().collection(STUDIES_COLLECTION) \
+                  .document(study_id).collection("experiments").document(exp_code)
+
+        # Ensure the trials array exists and matches the config's trial_count
+        await self._init_trials(exp_ref, trial_count)
+
+        # ── Bridge (push games + stats to Firestore) ──────────
+        if bridge_server and not bridge_server._firestore_ready:
+            init_firestore()
+
+        store = LogStore(job_log_dir)
+        store.load_logs()
+
+        async def _tail_loop():
+            last_game_count = 0
+            while not self._shutting_down:
+                try:
+                    await self._maybe_start_render_for_job(job_id)
+                    store.tail()
+                    if len(store.games) > last_game_count:
+                        last_game_count = len(store.games)
+                        try:
+                            _jobs_col().document(job_id).update({
+                                "result": {"trials_completed": last_game_count,
+                                           "trial_count": trial_count},
+                                "updated_at": datetime.now(timezone.utc),
+                            })
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"[ServerHandler] Tail/push error: {e}")
+                await asyncio.sleep(5.0)
+
+        tail_task = asyncio.create_task(_tail_loop())
+
+        # ── Trial loop ─────────────────────────────────────────
+        trials_done = 0
+        try:
+            while not self._shutting_down:
+                # Random 0-5s wait to mitigate multi-server collisions
+                await asyncio.sleep(random.uniform(0, 5))
+
+                trial_index = await self._claim_trial(exp_ref)
+                if trial_index is None:
+                    break  # no pending trials left
+
+                # Start the relay BEFORE the trial engine is created so the
+                # engine attaches a RenderClient from the first tick.
+                await self._maybe_start_render_for_job(job_id)
+
+                print(f"[ServerHandler] Job {job_id}: running trial {trial_index}")
+                os.environ["TRIAL_INDEX"] = str(trial_index)
+
+                ok, err_msg = await self._run_trial(
+                    job_id, trial_index, config_data, config,
+                    free_roam, voting, win_conditions, position_mode,
+                    map_data, agent_types, exp, job_log_dir)
+                await self._finish_trial(exp_ref, trial_index, ok, err_msg)
+                trials_done += 1
+
+                try:
+                    _jobs_col().document(job_id).update({
+                        "result": {"trials_completed": trials_done,
+                                   "trial_count": trial_count},
+                        "updated_at": datetime.now(timezone.utc),
+                    })
+                except Exception:
+                    pass
+
+            return {"trials_completed": trials_done, "trial_count": trial_count}
+        finally:
+            os.environ.pop("TRIAL_INDEX", None)
+            tail_task.cancel()
+            try:
+                store.tail()  # final flush
+            except Exception:
+                pass
+
+    # ── Trial claiming / finishing ────────────────────────────────
+
+    async def _init_trials(self, exp_ref, trial_count: int):
+        """Ensure the experiment doc has a trials array of the right length."""
+        db = _firestore_client()
+
+        @firestore.transactional
+        def _txn(txn, ref):
+            snap = ref.get(transaction=txn)
+            if not snap.exists:
+                return
+            trials = list(snap.to_dict().get("trials") or [])
+            if len(trials) != trial_count:
+                if len(trials) < trial_count:
+                    trials.extend(["pending"] * (trial_count - len(trials)))
+                else:
+                    trials = trials[:trial_count]
+                txn.update(ref, {"trials": trials})
+        try:
+            _txn(db.transaction(), exp_ref)
+        except Exception as e:
+            print(f"[ServerHandler] init_trials failed: {e}")
+
+    async def _claim_trial(self, exp_ref) -> Optional[int]:
+        """Atomically claim a random pending trial index.
+
+        Firestore auto-retries the transaction on contention; each retry
+        re-reads the fresh trials array and picks a NEW random index.
+        Returns None if no pending trials remain.
+        """
+        db = _firestore_client()
+
+        @firestore.transactional
+        def _txn(txn, ref):
+            snap = ref.get(transaction=txn)
+            if not snap.exists:
+                return None
+            data = snap.to_dict()
+            trials = list(data.get("trials") or [])
+            pending = [i for i, s in enumerate(trials) if s == "pending"]
+            if not pending:
+                return None
+            idx = random.choice(pending)
+            trials[idx] = "running"
+            now_iso = datetime.now(timezone.utc).isoformat()
+            claimed_at = dict(data.get("trial_claimed_at") or {})
+            claimed_at[str(idx)] = now_iso
+            claimed_by = dict(data.get("trial_claimed_by") or {})
+            claimed_by[str(idx)] = self.server_id
+            txn.update(ref, {
+                "trials": trials,
+                "trial_claimed_at": claimed_at,
+                "trial_claimed_by": claimed_by,
+            })
+            return idx
+
+        try:
+            return _txn(db.transaction(), exp_ref)
+        except Exception as e:
+            print(f"[ServerHandler] Trial claim failed: {e}")
+            return None
+
+    async def _finish_trial(self, exp_ref, trial_index: int, success: bool,
+                            error_msg: str = ""):
+        """Mark a claimed trial as completed, or as error with a message."""
+        db = _firestore_client()
+
+        @firestore.transactional
+        def _txn(txn, ref):
+            snap = ref.get(transaction=txn)
+            if not snap.exists:
+                return
+            data = snap.to_dict()
+            trials = list(data.get("trials") or [])
+            # If the data was cleared after this trial was claimed, the
+            # result belongs to a wiped run — discard it, don't resurrect.
+            # (Clear deletes trial_claimed_at, so a missing claim entry
+            # alongside a cleared_at also means the claim predates the clear.)
+            idx_str = str(trial_index)
+            cleared = data.get("cleared_at")
+            claimed = (data.get("trial_claimed_at") or {}).get(idx_str)
+            if cleared is not None and (claimed is None or _to_ms(cleared) > _to_ms(claimed)):
+                print(f"[ServerHandler] Trial {trial_index} claimed before clear — discarding result")
+                return
+            updates = {}
+            if trial_index < len(trials):
+                trials[trial_index] = "completed" if success else "error"
+                updates["trials"] = trials
+            # Clear the claim timestamp
+            claimed = dict(data.get("trial_claimed_at") or {})
+            if idx_str in claimed:
+                del claimed[idx_str]
+                updates["trial_claimed_at"] = claimed
+            # Record completion metadata: server, time, version
+            now_iso = datetime.now(timezone.utc).isoformat()
+            completed_at = dict(data.get("trial_completed_at") or {})
+            completed_at[idx_str] = now_iso
+            updates["trial_completed_at"] = completed_at
+            completed_by = dict(data.get("trial_completed_by") or {})
+            completed_by[idx_str] = self.server_id
+            updates["trial_completed_by"] = completed_by
+            from version import get_version
+            versions = dict(data.get("trial_versions") or {})
+            versions[idx_str] = get_version()
+            updates["trial_versions"] = versions
+            if not success:
+                errors = dict(data.get("trial_errors") or {})
+                errors[idx_str] = error_msg[:2000]
+                updates["trial_errors"] = errors
+            if updates:
+                txn.update(ref, updates)
+        try:
+            _txn(db.transaction(), exp_ref)
+        except Exception as e:
+            print(f"[ServerHandler] finish_trial failed: {e}")
+
+    async def _run_trial(self, job_id: str, trial_index: int, config_data: dict,
+                         config, free_roam, voting, win_conditions,
+                         position_mode, map_data, agent_types, exp,
+                         job_log_dir: str) -> tuple[bool, str]:
+        """Run ONE game for the claimed trial. Returns (success, error_msg)."""
         from engine import GameEngine
         from event_store import EventStore
 
+        # Write to the job-level dir — sessions are timestamped, so
+        # sequential trials never collide.  LogStore tails SESSION-*.jsonl
+        # at the top level, so subdirectories would be invisible to it.
         event_store = EventStore(log_dir=job_log_dir)
-        print(f"[ServerHandler] Job logs: {job_log_dir}")
 
         render_client = None
         if self._render_relay:
@@ -479,48 +771,17 @@ class ServerHandler:
                             win_conditions=win_conditions,
                             position_mode=position_mode)
         engine._agent_types = agent_types
-        engine._experiment_config = exp.to_json()
+        engine._experiment_config = config_data
         engine.game = exp
 
-        # ── Bridge (push games + stats to Firestore) ──────────
-        from bridge_server import LogStore, _firestore_ready, init_firestore
-        if not _firestore_ready:
-            init_firestore()
-
-        store = LogStore(job_log_dir)
-        store.load_logs()
-
-        async def _tail_loop():
-            last_game_count = 0
-            while not self._shutting_down:
-                try:
-                    store.tail()
-                    # Push partial progress to job doc as games complete
-                    if len(store.games) > last_game_count:
-                        last_game_count = len(store.games)
-                        try:
-                            _jobs_col().document(job_id).update({
-                                "result": {"games_completed": last_game_count},
-                                "updated_at": datetime.now(timezone.utc),
-                            })
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                await asyncio.sleep(5.0)
-
-        tail_task = asyncio.create_task(_tail_loop())
-
-        # ── Run ───────────────────────────────────────────────
         try:
-            summary = await engine.run(max_games=max_games)
-            return summary or {}
-        finally:
-            tail_task.cancel()
-            try:
-                store.tail()  # final flush
-            except Exception:
-                pass
+            summary = await engine.run(max_games=1)
+            print(f"[ServerHandler] Trial {trial_index} done: "
+                  f"{json.dumps(summary or {})[:200]}")
+            return True, ""
+        except Exception as e:
+            print(f"[ServerHandler] Trial {trial_index} failed: {e}")
+            return False, str(e)
 
     # ── Shutdown ────────────────────────────────────────────────────
 
@@ -539,10 +800,10 @@ class ServerHandler:
         except Exception:
             pass
 
-        # Fail current job if any
-        if self._current_job_id:
+        # Fail all active jobs
+        for job_id in list(self._active_jobs):
             try:
-                _jobs_col().document(self._current_job_id).update({
+                _jobs_col().document(job_id).update({
                     "status": "failed",
                     "error": "server shutting down",
                     "finished_at": datetime.now(timezone.utc),
@@ -584,10 +845,13 @@ async def main():
                         help="Log directory for job output (default: ../log)")
     parser.add_argument("--study", default="",
                         help="Optional: only accept jobs for this study ID")
+    parser.add_argument("--description", default="",
+                        help="Human-readable description of this server")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of concurrent job workers (default: 1)")
     args = parser.parse_args()
 
     # ── Init Firestore ────────────────────────────────────────
-    from bridge_server import init_firestore
     if not init_firestore():
         print("[ServerHandler] FATAL: Firestore not available. Check FIREBASE_CRED_PATH.")
         return
@@ -600,6 +864,8 @@ async def main():
         render_port=args.render_port,
         funnel=args.funnel,
         study_filter=args.study,
+        description=args.description,
+        workers=args.workers,
     )
 
     await handler.register()

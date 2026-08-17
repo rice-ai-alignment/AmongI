@@ -84,6 +84,20 @@ class RenderClient:
                 return False
         return True
 
+    async def flush(self):
+        """Ensure all sent events have reached Godot before closing.
+
+        A ping round-trip guarantees everything queued on the socket has
+        been delivered — closing immediately after send() would discard
+        buffered events (e.g. the final game_end)."""
+        if not self._ws or not self._connected:
+            return
+        try:
+            await asyncio.wait_for(self._ws.ping(), timeout=3.0)
+        except Exception:
+            # Older websockets or already-closing socket — best effort
+            await asyncio.sleep(0.3)
+
     async def close(self):
         """Close the WebSocket connection."""
         self._connected = False

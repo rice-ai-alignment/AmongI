@@ -27,13 +27,16 @@ class GamePhase(ExperimentComponent):
         "timeout": Param(float, 30.0, "Phase duration in seconds"),
         "tick_interval": Param(float, 3.0, "Seconds between agent decision ticks"),
         "actions": Param(list, [], "Actions available during this phase", element_type=ExperimentComponent),
+        "position_mode": Param(None, None, "Position mode for this phase (e.g. TilePosition)"),
     }
 
-    def __init__(self, timeout=30.0, tick_interval=3.0, actions=None, **kwargs):
+    def __init__(self, timeout=30.0, tick_interval=3.0, actions=None,
+                 position_mode=None, **kwargs):
         super().__init__(**kwargs)
         self.timeout = timeout
         self.tick_interval = tick_interval
         self.actions = actions or []
+        self.position_mode = position_mode
         self._elapsed: float = 0.0
 
     # ── lifecycle hooks ──────────────────────────────────────────────────
@@ -171,19 +174,17 @@ class BaseGame(ExperimentComponent):
     params = {
         "phases": Param(list, [], "GamePhase list for this game", element_type=ExperimentComponent),
         "win_conditions": Param(list, [], "WinCondition rules", element_type=ExperimentComponent),
-        "map": Param(None, None, "Map component"),
         "agents": Param(None, None, "AgentConfig for this game"),
-        "game_count": Param(int, 1, "Max games to play"),
+        "trial_count": Param(int, 1, "Number of trials (individual games) to run"),
     }
 
-    def __init__(self, phases=None, win_conditions=None, map=None, agents=None,
-                 game_count=0, **kwargs):
+    def __init__(self, phases=None, win_conditions=None, agents=None,
+                 trial_count=None, **kwargs):
         super().__init__(**kwargs)
         self.phases = phases or []
         self.win_conditions = win_conditions or []
-        self.map = map
         self.agents = agents
-        self.game_count = game_count
+        self.trial_count = trial_count if trial_count is not None else 1
         self._phase_index: int = 0
 
     @property
