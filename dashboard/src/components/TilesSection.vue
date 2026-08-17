@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
 import { TYPE } from "../composables/typeSettings.js";
+import { winningGroups, groupWins, paletteCls } from "../composables/experimentStats.js";
 import TypedSpan from "./TypedSpan.vue";
 import TerminalCard from "./TerminalCard.vue";
 
@@ -9,18 +10,13 @@ const props = defineProps({
   config: Object,
 });
 
-const AGENT_COLORS = ["g", "r", "a", "", "c-d2", "c-d4"];
-
 const total = computed(() => props.stats?.total_games || 0);
-const byWinner = computed(() => props.stats?.by_winner || {});
 
 const typeParts = computed(() => {
-  const types = (props.config?.agents?.types || []).filter(t => t.id);
-  return types.map((t, i) => {
-    const wins = byWinner.value[t.id] || 0;
-    const rate = total.value > 0 ? (wins / total.value) * 100 : 0;
-    const cls = AGENT_COLORS[i % AGENT_COLORS.length];
-    return `<span class="${cls}">${rate.toFixed(0)}% ${t.id}</span> (${wins})`;
+  const groups = winningGroups(props.config);
+  return groupWins(props.stats, groups).map(g => {
+    const cls = paletteCls(g.key);
+    return `<span class="${cls}">${g.pct}% ${g.label}</span> (${g.wins})`;
   });
 });
 

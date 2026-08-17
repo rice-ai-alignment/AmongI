@@ -20,6 +20,7 @@ import ConfirmPopup from "./components/ConfirmPopup.vue";
 import DocsPanel from "./components/DocsPanel.vue";
 import TerminalCard from "./components/TerminalCard.vue";
 import CopyButton from "./components/CopyButton.vue";
+import LandingPage from "./components/LandingPage.vue";
 
 const {
   user, authReady, initAuth, signIn, signOut,
@@ -35,7 +36,8 @@ const {
 const browsing = ref(true);
 const interval = ref(10);
 const activeTab = ref("stats");   // "stats" | "config" | "jobs" (sub-tabs under experiments)
-const navMode = ref("experiments"); // "experiments" | "documentation" | "servers" | "admin"
+// "home" | "experiments" | "documentation" | "servers" | "admin"
+const navMode = ref(window.location.pathname === "/" ? "home" : "experiments");
 const configJson = ref(null);
 const configLoading = ref(false);
 const maxGames = computed(() => configJson.value?.trial_count || 1);
@@ -63,6 +65,7 @@ const expName = computed(() => experiments.value.find(e => e.id === activeExperi
 
 // Titlebar path
 const pathText = computed(() => {
+  if (navMode.value === "home") return "~/";
   if (navMode.value === "servers") return "~/servers";
   if (navMode.value === "documentation") return "~/documentation";
   if (navMode.value === "admin") return "~/admin";
@@ -275,6 +278,10 @@ function restartPolling() {
 }
 // Sync URL path with current navigation state
 function syncURL() {
+  if (navMode.value === "home") {
+    window.history.replaceState({}, "", "/");
+    return;
+  }
   if (navMode.value === "servers") {
     window.history.replaceState({}, "", "/servers");
     return;
@@ -360,7 +367,7 @@ onUnmounted(() => {
     <div class="term-titlebar">
       <span class="tb-title">
         RAIA LABS
-        <span class="tb-path"><TypedSpan :text="pathText" :speed="TYPE.normal" :key="pathText" /></span>
+        <span class="tb-path"><TypedSpan :text="pathText" :speed="TYPE.normal" :key="pathText" /><span class="tb-cursor">_</span></span>
       </span>
       <span class="tb-actions">
         <template v-if="user">
@@ -375,6 +382,7 @@ onUnmounted(() => {
     <div class="term-body">
       <!-- Top-level nav -->
       <div class="top-nav">
+        <span class="tab" :class="{ active: navMode === 'home' }" @click="navMode = 'home'">[ home ]</span>
         <span class="tab" :class="{ active: navMode === 'experiments' }" @click="navMode = 'experiments'">[ experiments ]</span>
         <span class="tab" :class="{ active: navMode === 'documentation' }" @click="navMode = 'documentation'">[ documentation ]</span>
         <span class="tab" :class="{ active: navMode === 'servers' }" @click="navMode = 'servers'">[ servers ]</span>
@@ -395,6 +403,11 @@ onUnmounted(() => {
           <option :value="60">60s</option>
           <option :value="0">off</option>
         </select>
+      </div>
+
+      <!-- Home view — live stats, same terminal shell -->
+      <div class="term-content" v-if="navMode === 'home'" style="flex-direction:column; gap:10px; overflow:hidden;">
+        <LandingPage />
       </div>
 
       <!-- Experiments view -->
@@ -646,6 +659,8 @@ body {
 }
 .tb-title  { flex: 1; }
 .tb-path    { color: var(--text-dim); text-shadow: none; margin-left: var(--sp-lg); letter-spacing: 0; }
+.tb-cursor  { color: var(--green); text-shadow: none; animation: tb-blink 1s step-end infinite; }
+@keyframes tb-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 .tb-actions { display: flex; align-items: center; gap: var(--sp-sm); }
 .tb-user    { font-size: var(--fs-ui); color: var(--text-dim); }
 .tb-btn {

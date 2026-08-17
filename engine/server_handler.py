@@ -21,6 +21,7 @@ import socket
 import subprocess
 import sys
 import traceback
+import traceback
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -162,7 +163,9 @@ class ServerHandler:
             "render_active": False,
             "funnel_url": None,
         }
-        _servers_col().document(self.server_id).set(doc, merge=True)
+        # timeout=15 — a hung RPC must not stall startup for the default
+        # 60s+retries window; the heartbeat re-posts this doc every beat.
+        _servers_col().document(self.server_id).set(doc, merge=True, timeout=15.0)
         print(f"[ServerHandler] Registered as '{self.server_id}' ({self._max_workers} workers, hostname={hostname})")
 
     # ── Heartbeat ────────────────────────────────────────────────────
@@ -191,7 +194,7 @@ class ServerHandler:
                     "render_active": self._render_relay is not None,
                     "funnel_url": self._funnel_url,
                 }
-                _servers_col().document(self.server_id).set(update, merge=True)
+                _servers_col().document(self.server_id).set(update, merge=True, timeout=15.0)
 
                 # Append usage sample (rolling, cap at 120)
                 self._append_usage_sample(cpu_percent, mem_percent)
@@ -442,13 +445,23 @@ class ServerHandler:
 
                 result = await self._run_job(job_id, job)
 
-                job_doc.reference.update({
-                    "status": "completed",
+                # A trial that crashed is a job failure — don't report
+                # "completed" when trials errored.  Per-trial status lives
+                # on the experiment doc (trial_errors); the job error shows
+                # the first traceback so the dashboard lists it right away.
+                failed = result.get("failed_trials", 0)
+                update = {
+                    "status": "failed" if failed else "completed",
                     "result": result,
                     "finished_at": datetime.now(timezone.utc),
-                })
+                }
+                if failed:
+                    update["error"] = result.get("error", "")
+                job_doc.reference.update(update)
                 self._jobs_completed += 1
-                print(f"[ServerHandler] Job {job_id} completed: {result.get('games', 0)} games")
+                verdict = f"failed ({failed} trial{'s' if failed != 1 else ''})" \
+                    if failed else f"completed ({result.get('trials_completed', 0)} trials)"
+                print(f"[ServerHandler] Job {job_id} {verdict}")
                 self._log_usage(job_id, job, result)
 
             except Exception:
@@ -590,6 +603,8 @@ class ServerHandler:
 
         # ── Trial loop ─────────────────────────────────────────
         trials_done = 0
+        failed_trials = 0
+        first_error = ""
         try:
             while not self._shutting_down:
                 # Random 0-5s wait to mitigate multi-server collisions
@@ -610,19 +625,25 @@ class ServerHandler:
                     job_id, trial_index, config_data, config,
                     free_roam, voting, win_conditions, position_mode,
                     map_data, agent_types, exp, job_log_dir)
+                if not ok:
+                    failed_trials += 1
+                    if not first_error:
+                        first_error = err_msg
                 await self._finish_trial(exp_ref, trial_index, ok, err_msg)
                 trials_done += 1
 
                 try:
                     _jobs_col().document(job_id).update({
                         "result": {"trials_completed": trials_done,
-                                   "trial_count": trial_count},
+                                   "trial_count": trial_count,
+                                   "failed_trials": failed_trials},
                         "updated_at": datetime.now(timezone.utc),
                     })
                 except Exception:
                     pass
 
-            return {"trials_completed": trials_done, "trial_count": trial_count}
+            return {"trials_completed": trials_done, "trial_count": trial_count,
+                    "failed_trials": failed_trials, "error": first_error}
         finally:
             os.environ.pop("TRIAL_INDEX", None)
             tail_task.cancel()
@@ -736,9 +757,15 @@ class ServerHandler:
             versions = dict(data.get("trial_versions") or {})
             versions[idx_str] = get_version()
             updates["trial_versions"] = versions
-            if not success:
-                errors = dict(data.get("trial_errors") or {})
-                errors[idx_str] = error_msg[:2000]
+            errors = dict(data.get("trial_errors") or {})
+            if success:
+                # A successful rerun must not leave a stale error behind
+                if idx_str in errors:
+                    del errors[idx_str]
+                    updates["trial_errors"] = errors
+            else:
+                # Room for a full traceback (message + file/line frames)
+                errors[idx_str] = error_msg[:4000]
                 updates["trial_errors"] = errors
             if updates:
                 txn.update(ref, updates)
@@ -780,8 +807,12 @@ class ServerHandler:
                   f"{json.dumps(summary or {})[:200]}")
             return True, ""
         except Exception as e:
-            print(f"[ServerHandler] Trial {trial_index} failed: {e}")
-            return False, str(e)
+            # Full traceback → console AND stored on the experiment doc so
+            # the exact file/line is visible in the dashboard, not just
+            # the bare exception message.
+            tb = traceback.format_exc()
+            print(f"[ServerHandler] Trial {trial_index} failed: {e}\n{tb}")
+            return False, f"{e}\n{tb}"
 
     # ── Shutdown ────────────────────────────────────────────────────
 
@@ -868,7 +899,16 @@ async def main():
         workers=args.workers,
     )
 
-    await handler.register()
+    # Registration is best-effort: the heartbeat loop re-posts the server
+    # doc every beat, so a transient Firestore timeout here (e.g. 504
+    # Deadline Exceeded) must NOT kill the daemon — jobs and heartbeats
+    # should keep running regardless.
+    try:
+        await handler.register()
+    except Exception as e:
+        print(f"[ServerHandler] Registration failed: {e}")
+        traceback.print_exc()
+        print("[ServerHandler] Continuing — heartbeat will keep retrying registration.")
 
     if args.render:
         await handler._start_render_relay()

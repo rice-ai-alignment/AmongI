@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
 import AsciiTable from "./AsciiTable.vue";
+import { sortedPlayers } from "../composables/experimentStats.js";
 
 const props = defineProps({ stats: Object, config: Object });
 
@@ -22,7 +23,7 @@ function formatCell(key, val, row) {
 }
 
 const allRows = computed(() => {
-  const players = props.stats?.players || [];
+  const players = sortedPlayers(props.stats);
   return players.map(p => {
     const wr = p.games > 0 ? (p.wins / p.games * 100).toFixed(0) + "%" : "0%";
     return {

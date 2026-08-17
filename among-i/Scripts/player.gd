@@ -12,6 +12,8 @@ var action_label: Label  # recent-actions list above the head
 
 var is_moving: bool = false
 var is_dead: bool = false
+var walk_tween: Tween = null
+var frame_tween: Tween = null
 
 const NO_PENDING := Vector2i(-99999, -99999)
 var pending_tile: Vector2i = NO_PENDING  # queued move target while mid-tween
@@ -35,17 +37,27 @@ func set_tile_position(target_tile_coords: Vector2i):
 	self.global_position = get_tile_position(target_tile_coords)
 
 func set_dead():
-	"""Turn this player into a visible corpse (dark tint, no movement)."""
+	"""Turn this player into a visible corpse (dead sprite row, no movement)."""
 	is_dead = true
 	pending_tile = NO_PENDING
+	# Stop any in-flight walk animation so the corpse pose sticks
+	if frame_tween != null and frame_tween.is_valid():
+		frame_tween.kill()
+	if walk_tween != null and walk_tween.is_valid():
+		walk_tween.kill()
+	is_moving = false
 	var sprite = get_node("Sprite2D")
 	sprite.modulate = Color(0.22, 0.22, 0.28)
+	sprite.frame_coords.y = 5   # dead body row in the spritesheet
+	sprite.frame_coords.x = 0
 
 func set_alive():
 	"""Restore a corpse to a living player."""
 	is_dead = false
 	var sprite = get_node("Sprite2D")
 	sprite.modulate = Color(1, 1, 1)
+	sprite.frame_coords.y = idle_row
+	sprite.frame_coords.x = 0
 
 func move_to_tile(target_tile_coords: Vector2i):
 	if is_dead:
@@ -62,24 +74,24 @@ func move_to_tile(target_tile_coords: Vector2i):
 	var target_world_position = get_tile_position(target_tile_coords)
 
 	is_moving = true
-	var tween = create_tween()
+	walk_tween = create_tween()
 
 	# 1. Flip Sprite based on direction
 	#if target_world_position.x != global_position.x:
 		#sprite.flip_h = target_world_position.x < global_position.x
 
 	# 2. Parallel Tween: Move Body + Animate Frames
-	tween.set_parallel(true)
+	walk_tween.set_parallel(true)
 
 	# A. The actual movement
-	tween.tween_property(self, "global_position", target_world_position, move_speed)\
+	walk_tween.tween_property(self, "global_position", target_world_position, move_speed)\
 		.set_trans(Tween.TRANS_LINEAR)\
 		.set_ease(Tween.EASE_IN_OUT)
 
 	# B. The Frame Animation
 	# We animate the 'x' of frame_coords from 0 to the last frame
 	sprite.frame_coords.y = walk_row # Switch to the walking row
-	var frame_tween = create_tween()
+	frame_tween = create_tween()
 	frame_tween.set_loops(2) # Repeat the walk cycle twice during the slow move
 	frame_tween.set_trans(Tween.TRANS_LINEAR)
 	frame_tween.tween_property(sprite, "frame_coords:y", frame_count - 1, move_speed / 2.0)\
@@ -116,6 +128,11 @@ func _ready():
 	# Snap to the nearest tile center immediately
 	var current_tile = tile_map.local_to_map(global_position)
 	global_position = tile_map.map_to_local(current_tile)
+
+	# Start on the idle frame explicitly (row 0, frame 0)
+	var sprite = get_node("Sprite2D")
+	sprite.frame_coords.y = idle_row
+	sprite.frame_coords.x = 0
 
 	# Recent-actions label above the head (created in code — no scene edits)
 	action_label = Label.new()
