@@ -13,9 +13,12 @@ import StaggerBlock from "./components/StaggerBlock.vue";
 import ServerList from "./components/ServerList.vue";
 import AllJobsList from "./components/AllJobsList.vue";
 import AdminPanel from "./components/AdminPanel.vue";
+import DataViewer from "./components/DataViewer.vue";
+import GameInspector from "./components/GameInspector.vue";
 import JobStatus from "./components/JobStatus.vue";
 import ConfirmPopup from "./components/ConfirmPopup.vue";
 import DocsPanel from "./components/DocsPanel.vue";
+import TerminalCard from "./components/TerminalCard.vue";
 import CopyButton from "./components/CopyButton.vue";
 
 const {
@@ -35,7 +38,15 @@ const activeTab = ref("stats");   // "stats" | "config" | "jobs" (sub-tabs under
 const navMode = ref("experiments"); // "experiments" | "documentation" | "servers" | "admin"
 const configJson = ref(null);
 const configLoading = ref(false);
-const maxGames = computed(() => configJson.value?.game_count || 1);
+const maxGames = computed(() => configJson.value?.trial_count || 1);
+
+// Config is locked once any data exists — only a data clear unlocks it
+const configLocked = computed(() => {
+  if (!stats.value) return false;
+  const hasGames = (stats.value.total_games || 0) > 0;
+  const hasTrials = Array.isArray(stats.value.trials) && stats.value.trials.length > 0;
+  return hasGames || hasTrials;
+});
 let pollTimer = null;
 
 // Copy command for manual runs
@@ -61,17 +72,23 @@ const pathText = computed(() => {
   return p;
 });
 
+// True when configJson came from the DB (safe to run).  False when it
+// is a sample fallback — running with it would overwrite the real config.
+const configFromDb = ref(false);
+
 async function loadConfig() {
   if (!activeExperimentId.value || !activeStudyId.value) return;
   configLoading.value = true;
   try {
-    // Try Firestore first, fall back to sample
+    // Try Firestore first, fall back to sample (view-only, unsaved)
     const fromDB = await loadExperimentConfig(activeStudyId.value, activeExperimentId.value);
     if (fromDB) {
       configJson.value = fromDB;
+      configFromDb.value = true;
     } else {
       const res = await fetch("/sample_data/example_basic.json");
       if (res.ok) configJson.value = await res.json();
+      configFromDb.value = false;
     }
   } catch (e) {
     console.error("Failed to load config:", e);
@@ -101,21 +118,56 @@ async function openRunPopup() {
   showRunPopup.value = true;
 }
 
+// ── Shared config compiler (same code as the server pipeline) ──────
+let _schema = null;
+
+async function ensureCompiler() {
+  if (!_schema) {
+    const res = await fetch("/schema.json");
+    _schema = await res.json();
+  }
+  if (!window.validateConfig) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "/schema_compiler.js";
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("config compiler failed to load"));
+      document.head.appendChild(s);
+    });
+  }
+}
+
 async function confirmRun() {
   if (!activeStudyId.value || !activeExperimentId.value) return;
   try {
-    runStatus.value = "saving";
-    // Ensure config is loaded and saved to experiment doc first
-    if (!configJson.value) await loadConfig();
-    if (configJson.value) {
-      await saveExperimentConfig(
-        activeStudyId.value, activeExperimentId.value, configJson.value);
+    // The config on the EXPERIMENT DOC is what runs — never write it here.
+    // (Auto-saving here used stale in-memory configs and overwrote real ones.)
+    const dbConfig = await loadExperimentConfig(
+      activeStudyId.value, activeExperimentId.value);
+    if (!dbConfig) {
+      runStatus.value = "error";
+      runError.value =
+        "no config saved for this experiment —\n" +
+        "open the [ config ] tab, edit, and press [ save ] first";
+      return;
     }
+
+    // Validate the DB config BEFORE queueing — errors block the job
+    await ensureCompiler();
+    const { errors } = window.validateConfig(dbConfig, _schema);
+    if (errors.length) {
+      runStatus.value = "error";
+      runError.value =
+        errors.slice(0, 6).join("\n") +
+        (errors.length > 6 ? `\n… and ${errors.length - 6} more` : "") +
+        "\n\nfix the config in the [ config ] tab — save changes then run again";
+      return;
+    }
+
     runStatus.value = "queuing";
     const jobId = await queueJob({
       studyId: activeStudyId.value,
       experimentCode: activeExperimentId.value,
-      maxGames: maxGames.value,
     });
     queuedJobId.value = jobId;
     runStatus.value = "done";
@@ -138,6 +190,50 @@ const clearingData = ref(false);
 const clearCountdown = ref(3);
 const clearReady = ref(false);
 let clearTimer = null;
+
+// ── Reset config to an example ─────────────────────────────────────
+const showResetPopup = ref(false);
+const resetExamples = ref([]);   // [{name, filename}]
+const resetting = ref(false);
+const resetError = ref("");
+
+async function openResetPopup() {
+  showResetPopup.value = true;
+  if (resetExamples.value.length) return;
+  const files = [
+    { name: "basic (crew + imposter, 5 trials)", file: "/sample_data/example_basic.json" },
+    { name: "small kill (fast kills)", file: "/sample_data/example_small_kill.json" },
+    { name: "timer (short rounds)", file: "/sample_data/example_timer.json" },
+  ];
+  const loaded = [];
+  for (const f of files) {
+    try {
+      const res = await fetch(f.file);
+      if (res.ok) loaded.push({ name: f.name, filename: f.file.split("/").pop(), json: await res.json() });
+    } catch (e) { /* skip unavailable */ }
+  }
+  resetExamples.value = loaded;
+}
+
+async function resetToExample(ex) {
+  if (!activeStudyId.value || !activeExperimentId.value) return;
+  resetting.value = true;
+  resetError.value = "";
+  try {
+    console.log(`[reset] ${ex.filename} → studies/${activeStudyId.value}/experiments/${activeExperimentId.value}`);
+    // saveExperimentConfig verifies the write against the server before returning
+    await saveExperimentConfig(
+      activeStudyId.value, activeExperimentId.value, ex.json);
+    configJson.value = ex.json;
+    configFromDb.value = true;
+    showResetPopup.value = false;
+  } catch (e) {
+    resetError.value = e.message || String(e);
+    console.error("[reset] failed:", e);
+  } finally {
+    resetting.value = false;
+  }
+}
 
 watch(showClearPopup, (val) => {
   if (val) {
@@ -268,8 +364,8 @@ onUnmounted(() => {
       </span>
       <span class="tb-actions">
         <template v-if="user">
-          <span class="tb-user">{{ user.displayName }}</span>
-          <button class="tb-btn" @click="signOut">logout</button>
+          <span class="tb-user">[ {{ user.displayName }} ]</span>
+          <button class="tb-btn" @click="signOut">[ logout ]</button>
         </template>
         <button v-else class="tb-btn" @click="signIn" :disabled="!authReady">login</button>
       </span>
@@ -309,25 +405,40 @@ onUnmounted(() => {
             <span class="tab" :class="{ active: activeTab === 'stats' }" @click="switchTab('stats')">[ stats ]</span>
             <span class="tab" :class="{ active: activeTab === 'config' }" @click="switchTab('config')">[ config ]</span>
             <span class="tab" :class="{ active: activeTab === 'jobs' }" @click="switchTab('jobs')">[ jobs ]</span>
+            <span class="tab" :class="{ active: activeTab === 'data' }" @click="switchTab('data')">[ data ]</span>
+            <span class="tab" :class="{ active: activeTab === 'inspect' }" @click="switchTab('inspect')">[ inspect ]</span>
+            <span class="spacer"></span>
+            <span v-if="user && activeTab === 'config' && !configLocked" class="tab" @click="openResetPopup">[ reset to example ]</span>
           </div>
           <StaggerBlock v-if="activeTab === 'stats'" :key="'stats-' + activeExperimentId">
             <TilesSection :stats="stats" :config="configJson" />
             <WinChart :stats="stats" :config="configJson" />
-            <div class="clear-bar" v-if="user && stats?.total_games">
-              <span class="dim">data: {{ stats.total_games }} games —</span>
+            <div class="clear-bar" v-if="user && configLocked">
+              <span class="dim">data: {{ stats.total_games }} trials —</span>
               <button class="run-btn" @click="showClearPopup = true" :disabled="clearingData">
                 {{ clearingData ? 'clearing...' : '[ clear data ]' }}
               </button>
             </div>
-            <PlayerTable :stats="stats" />
+            <PlayerTable :stats="stats" :config="configJson" />
             <MatchFeed :games="games" />
           </StaggerBlock>
           <StaggerBlock v-if="activeTab === 'config'" :key="'config-' + activeExperimentId">
-            <ConfigCard :config="configJson" title="experiment config" :editable="true" @saved="configJson = $event" />
+            <div v-if="configLocked" class="lock-bar">
+              <span class="a">[ locked ]</span>
+              <span class="dim">config is read-only while experiment data exists —</span>
+              <button class="run-btn" @click="showClearPopup = true">[ clear data ]</button>
+            </div>
+            <ConfigCard :config="configJson" title="experiment config" :editable="!configLocked" @saved="configJson = $event; configFromDb = true" @update="configJson = $event" />
+          </StaggerBlock>
+          <StaggerBlock v-if="activeTab === 'data'" :key="'data-' + activeExperimentId">
+            <DataViewer />
+          </StaggerBlock>
+          <StaggerBlock v-if="activeTab === 'inspect'" :key="'inspect-' + activeExperimentId">
+            <GameInspector />
           </StaggerBlock>
           <StaggerBlock v-if="activeTab === 'jobs'" :key="'jobs-' + activeExperimentId">
             <div class="run-bar" v-if="user">
-              <span class="dim">{{ maxGames }} games from config —</span>
+              <span class="dim">{{ maxGames }} trials from config —</span>
               <button v-if="canRunExperiments" class="run-btn" @click="openRunPopup">[ run on server ]</button>
               <span v-else class="dim" title="requires can_run_experiments permission">(no permission)</span>
               <span class="spacer"></span>
@@ -360,38 +471,52 @@ onUnmounted(() => {
   <!-- Run confirmation popup -->
   <div v-if="showRunPopup" class="popup-overlay" @click="dismissRunPopup">
     <div class="popup" @click.stop>
-      <div class="card-box">
-        <div class="box-line box-top">┌─ run experiment ───────────────────────────────────────┐</div>
-        <div class="box-body" style="white-space:normal">
-          <div v-if="runStatus === 'idle' || runStatus === 'saving' || runStatus === 'queuing'">
-            <div><span class="dim">study:</span> {{ activeStudyId }}</div>
-            <div><span class="dim">experiment:</span> {{ activeExperimentId }}</div>
-            <div><span class="dim">games:</span> {{ maxGames }} (from config)</div>
-            <div v-if="runStatus === 'saving'" class="a" style="margin-top:var(--sp-sm)">saving config...</div>
-            <div v-if="runStatus === 'queuing'" class="a" style="margin-top:var(--sp-sm)">queuing job...</div>
-            <div class="popup-acts" style="margin-top:var(--sp-md)">
-              <span class="pop-link" @click="dismissRunPopup">[ cancel ]</span>
-              <span v-if="runStatus === 'idle'" class="pop-link g" @click="confirmRun">[ run ]</span>
-            </div>
-          </div>
-          <div v-else-if="runStatus === 'done'">
-            <div class="g">job queued</div>
-            <div class="dim" style="margin-top:var(--sp-xs)">{{ queuedJobId }}</div>
-            <div class="dim">switched to jobs tab — monitor progress there</div>
-            <div class="popup-acts" style="margin-top:var(--sp-md)">
-              <span class="pop-link g" @click="dismissRunPopup">[ ok ]</span>
-            </div>
-          </div>
-          <div v-else-if="runStatus === 'error'">
-            <div class="r">failed to queue job</div>
-            <div class="dim" style="margin-top:var(--sp-xs)">{{ runError }}</div>
-            <div class="popup-acts" style="margin-top:var(--sp-md)">
-              <span class="pop-link" @click="dismissRunPopup">[ close ]</span>
-            </div>
+      <TerminalCard title="run experiment" :min-width="36" :collapsible="false">
+        <div v-if="runStatus === 'idle' || runStatus === 'saving' || runStatus === 'queuing'">
+          <div><span class="dim">study:</span> {{ activeStudyId }}</div>
+          <div><span class="dim">experiment:</span> {{ activeExperimentId }}</div>
+          <div><span class="dim">games:</span> {{ maxGames }} (from config)</div>
+          <div v-if="runStatus === 'saving'" class="a" style="margin-top:var(--sp-sm)">saving config...</div>
+          <div v-if="runStatus === 'queuing'" class="a" style="margin-top:var(--sp-sm)">queuing job...</div>
+          <div class="popup-acts" style="margin-top:var(--sp-md)">
+            <span class="pop-link" @click="dismissRunPopup">[ cancel ]</span>
+            <span v-if="runStatus === 'idle'" class="pop-link g" @click="confirmRun">[ run ]</span>
           </div>
         </div>
-        <div class="box-line box-bot">└────────────────────────────────────────────────────────┘</div>
-      </div>
+        <div v-else-if="runStatus === 'done'">
+          <div class="g">job queued</div>
+          <div class="dim" style="margin-top:var(--sp-xs)">{{ queuedJobId }}</div>
+          <div class="dim">switched to jobs tab — monitor progress there</div>
+          <div class="popup-acts" style="margin-top:var(--sp-md)">
+            <span class="pop-link g" @click="dismissRunPopup">[ ok ]</span>
+          </div>
+        </div>
+        <div v-else-if="runStatus === 'error'">
+          <div class="r">failed to queue job</div>
+          <div class="dim" style="margin-top:var(--sp-xs); white-space:pre-line; max-height:30vh; overflow-y:auto">{{ runError }}</div>
+          <div class="popup-acts" style="margin-top:var(--sp-md)">
+            <span class="pop-link" @click="dismissRunPopup">[ close ]</span>
+          </div>
+        </div>
+      </TerminalCard>
+    </div>
+  </div>
+
+  <!-- Reset config to example popup -->
+  <div v-if="showResetPopup" class="popup-overlay" @click="showResetPopup = false">
+    <div class="popup" @click.stop>
+      <TerminalCard title="reset config" :min-width="40" :collapsible="false">
+        <div class="dim">pick a template — overwrites the current config:</div>
+        <div v-if="!resetExamples.length" class="dim" style="margin-top:var(--sp-xs)">loading examples...</div>
+        <div v-for="ex in resetExamples" :key="ex.filename" class="reset-item" @click="resetToExample(ex)">
+          ▸ {{ ex.name }}
+        </div>
+        <div v-if="resetting" class="a" style="margin-top:var(--sp-xs)">saving...</div>
+        <div v-if="resetError" class="r" style="margin-top:var(--sp-xs); white-space:pre-line">{{ resetError }}</div>
+        <div class="popup-acts" style="margin-top:var(--sp-md)">
+          <span class="pop-link" @click="showResetPopup = false">[ cancel ]</span>
+        </div>
+      </TerminalCard>
     </div>
   </div>
 
@@ -422,7 +547,7 @@ onUnmounted(() => {
 
   /* Text */
   --text:       #c8dcc8;
-  --text-dim:   #4a5a4a;
+  --text-dim:   #7d947d;
 
   /* Accent */
   --green:      #4fe87c;
@@ -535,7 +660,7 @@ body {
   padding: var(--sp-xs) var(--sp-md);
 }
 .term-content {
-  flex: 1; display: flex; gap: 10px; overflow: hidden; flex-wrap: nowrap;
+  flex: 1; display: flex; gap: 10px; overflow-x: hidden; overflow-y: auto; flex-wrap: nowrap;
 }
 
 /* ── Status line ────────────────────────────────────────────────────── */
@@ -561,34 +686,6 @@ body {
 }
 .main-content::-webkit-scrollbar       { width: var(--scrollbar-w); }
 .main-content::-webkit-scrollbar-thumb  { background: var(--border); border-radius: var(--radius-sm); }
-
-/* ── ASCII box system (shared by TerminalCard + global) ───────────── */
-.card-box {
-  background: var(--surface-1); margin-bottom: var(--sp-xs);
-  overflow-x: auto; overflow-y: hidden;
-  box-shadow: 0 0 6px rgba(79,232,124,0.06), inset 0 0 4px rgba(79,232,124,0.03);
-  animation: box-expand 0.3s ease backwards;
-}
-.card-box::-webkit-scrollbar { height: var(--scrollbar-w); }
-.card-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-sm); }
-@keyframes box-expand { from { opacity: 0; transform: scaleY(0.8); } to { opacity: 1; transform: scaleY(1); } }
-.card-box:nth-child(1) { animation-delay: 0.05s; }
-.card-box:nth-child(2) { animation-delay: 0.12s; }
-.card-box:nth-child(3) { animation-delay: 0.19s; }
-.card-box:nth-child(4) { animation-delay: 0.26s; }
-
-.box-line {
-  font-size: var(--fs-ui); white-space: pre; line-height: var(--lh-tight);
-  padding: var(--sp-xxs) var(--sp-md); overflow: hidden;
-}
-.box-top { color: var(--green); text-shadow: var(--glow-medium); }
-.box-bot { color: var(--green); text-shadow: var(--glow-soft); }
-.box-body {
-  color: var(--text-dim); font-size: var(--fs-base);
-  padding: 0 var(--sp-sm) 0 calc(var(--sp-sm) + 1ch);
-  line-height: var(--lh-loose); overflow: hidden;
-}
-.box-body b { color: var(--text); }
 
 /* ── Card alt (non-box headers, etc.) ───────────────────────────────── */
 .card-head {
@@ -620,8 +717,6 @@ body {
 .c-num  { color: var(--ct-num); }
 
 /* ── Layout helpers ──────────────────────────────────────────────────── */
-.tbl-row { display: flex; gap: var(--sp-md); overflow: hidden; }
-.tbl-row > * { flex-shrink: 0; white-space: pre; }
 
 /* ── Nav & tabs ─────────────────────────────────────────────────────── */
 .top-nav {
@@ -644,18 +739,24 @@ body {
   padding: var(--sp-xs) var(--sp-md); margin-bottom: var(--sp-xs);
 }
 
+/* ── Config lock bar ──────────────────────────────────────────────────── */
+.lock-bar {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  padding: var(--sp-xs) var(--sp-md); margin-bottom: var(--sp-xs);
+}
+
 /* ── Run bar ──────────────────────────────────────────────────────────── */
 .run-bar {
   display: flex; align-items: center; gap: var(--sp-sm);
   padding: var(--sp-xs) var(--sp-md); margin-bottom: var(--sp-xs);
 }
 .run-btn {
-  background: none; border: var(--border-accent); border-radius: var(--radius-sm);
+  background: none; border: none;
   color: var(--green); font: var(--fs-md) var(--font-mono);
-  padding: 1px var(--sp-sm); cursor: pointer;
+  padding: 0; cursor: pointer;
   text-shadow: 0 0 5px rgba(79,232,124,0.3);
 }
-.run-btn:hover { background: rgba(79,232,124,0.1); }
+.run-btn:hover { text-shadow: 0 0 8px rgba(79,232,124,0.5); }
 .term-inp {
   background: var(--surface-2); border: var(--border-panel); border-radius: var(--radius-sm);
   color: var(--text); font: var(--fs-md) var(--font-mono);
@@ -695,6 +796,11 @@ body {
 .pop-link:hover { color: var(--text); }
 .pop-link.g:hover { color: var(--green); text-shadow: var(--glow-soft); }
 .pop-link.r:hover { color: var(--red); text-shadow: var(--glow-red); }
+.reset-item {
+  color: var(--text-dim); cursor: pointer; font-size: var(--fs-base);
+  padding: var(--sp-xxs) 0; border-bottom: var(--border-hair);
+}
+.reset-item:hover { color: var(--green); }
 
 /* Blinking cursor utility */
 .cursor-end::after {

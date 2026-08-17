@@ -4,6 +4,7 @@ import { useFirestore } from "../composables/useFirestore.js";
 import TerminalCard from "./TerminalCard.vue";
 import AsciiTable from "./AsciiTable.vue";
 import CopyButton from "./CopyButton.vue";
+import ServerPopup from "./ServerPopup.vue";
 
 const { servers } = useFirestore();
 
@@ -11,15 +12,15 @@ const now = ref(Date.now());
 const tick = setInterval(() => { now.value = Date.now(); }, 1000);
 onUnmounted(() => clearInterval(tick));
 
-const showSetup = ref(false);
+const selectedServer = ref(null);
 
 const COLUMNS = [
   { key: "name", header: "NAME" },
   { key: "status", header: "STATUS" },
+  { key: "version", header: "VER" },
   { key: "current_job", header: "JOB" },
   { key: "cpu", header: "CPU%", align: "right" },
   { key: "mem", header: "MEM%", align: "right" },
-  { key: "gpu", header: "GPU%", align: "right" },
   { key: "jobs", header: "DONE", align: "right" },
   { key: "seen", header: "SEEN" },
 ];
@@ -36,10 +37,11 @@ const composeYml = `# 1. Place firebase-key.json in engine/
 function formatCell(key, val, row) {
   if (key === "name") return { text: row.name || row.id || "?", bold: true };
   if (key === "status") return _statusCell(row);
+  if (key === "version") return { text: row.version || "-" };
   if (key === "current_job") {
-    const jid = row.current_job_id;
-    if (!jid) return { text: "-" };
-    return { text: jid.length > 12 ? jid.slice(0, 12) + "..." : jid, cls: "a" };
+    const ids = row.active_job_ids || [];
+    if (!ids.length) return { text: "-" };
+    return { text: String(ids.length), cls: "a" };
   }
   if (key === "cpu") return { text: row.cpu_percent != null ? String(Math.round(row.cpu_percent)) : "-" };
   if (key === "mem") return { text: row.memory_percent != null ? String(Math.round(row.memory_percent)) : "-" };
@@ -65,34 +67,37 @@ function _isOffline(row) {
 }
 
 function _ageText(row) {
-  if (!row.last_seen) return "never";
+  if (!row.last_seen) return "never".padEnd(8);
   const last = row.last_seen.toDate ? row.last_seen.toDate().getTime() : Date.parse(row.last_seen);
-  if (isNaN(last)) return "?";
+  if (isNaN(last)) return "?".padEnd(8);
   const sec = Math.round((now.value - last) / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
-  return `${Math.round(sec / 3600)}h ago`;
+  let out;
+  if (sec < 60) out = `${sec}s ago`;
+  else if (sec < 3600) out = `${Math.round(sec / 60)}m ago`;
+  else out = `${Math.round(sec / 3600)}h ago`;
+  // Fixed width so ticking ages never change column/box width
+  return out.padEnd(8);
 }
 </script>
 
 <template>
-  <TerminalCard title="servers" :min-width="88">
+  <div class="server-list">
     <AsciiTable
-      v-if="servers.length"
+      title="servers"
       :columns="COLUMNS"
       :rows="servers"
       :formatCell="formatCell"
-      no-type
+      :minWidth="88"
+      emptyText="(no servers connected)"
+      :clickableRows="true"
+      noType
+      @rowClick="(row) => (selectedServer = row)"
     />
-    <div v-else class="dim">(no servers connected)</div>
+
+    <ServerPopup :server="selectedServer" @close="selectedServer = null" />
 
     <!-- Setup instructions -->
-    <div class="setup-bar">
-      <span class="tab" :class="{ active: showSetup }" @click="showSetup = !showSetup">
-        {{ showSetup ? "[ - ]" : "[ + ]" }} setup instructions
-      </span>
-    </div>
-    <div v-if="showSetup" class="setup-body">
+    <TerminalCard title="server setup" :min-width="40" :collapsible="true" :startCollapsed="true">
       <div class="dim">Servers auto-register on first heartbeat. To add one:</div>
       <br />
 
@@ -130,26 +135,17 @@ function _ageText(row) {
 
       <br />
       <CopyButton :command="dockerCmd" label="copy docker command" />
-    </div>
-  </TerminalCard>
+    </TerminalCard>
+  </div>
 </template>
 
 <style scoped>
-.setup-bar {
-  padding: var(--sp-xs) 0 0 0;
-  border-top: var(--border-panel);
-  margin-top: var(--sp-xs);
-}
-.setup-body {
-  font-size: var(--fs-base);
-  padding: var(--sp-xs) 0 var(--sp-xs) calc(var(--sp-sm) + 1ch);
-  line-height: 1.5;
-}
+.server-list { display: flex; flex-direction: column; }
 .setup-pre {
   color: var(--text); white-space: pre-wrap;
   padding: var(--sp-xxs) 0;
   font-size: var(--fs-md);
 }
-.setup-body a { text-decoration: none; }
-.setup-body a:hover { text-decoration: underline; }
+a { text-decoration: none; }
+a:hover { text-decoration: underline; }
 </style>

@@ -416,8 +416,10 @@ class GameEngine:
                     vote_info += f"  {vp.name if vp else 'Unknown'} -> {target}\n"
                 p.ctx.set_temporary("voting", vote_info)
 
-            # Build context dict for the agent
-            prompt = p.ctx.build_prompt()
+            # Build context dict for the agent — per-turn info goes on the
+            # conversation stack as a user message (the system prompt stays
+            # fixed and was set once at game start via agent.set_intro).
+            prompt = p.ctx.build_user_message()
             action_schema = self.get_action_schema(p, is_voting)
             ctx_dict = {
                 "prompt": prompt,
@@ -427,7 +429,7 @@ class GameEngine:
                 "name": p.name,
             }
             decision = await asyncio.to_thread(p.agent.think, ctx_dict)
-            # Trace
+            # Trace the full context provided to the agent
             api_msgs = []
             for m in p.agent.last_api_messages:
                 content = m.get("content", "")
@@ -436,9 +438,21 @@ class GameEngine:
                     api_msgs.append({"role": m["role"], "content": parsed})
                 except (json.JSONDecodeError, TypeError):
                     api_msgs.append({"role": m["role"], "content": content})
+            # Build context summary: channels that were fed into the prompt
+            ctx_summary = {}
+            for ch in ("system", "role", "world_view", "nearby_bots", "bodies",
+                       "voting", "events", "chat_history", "first_turn"):
+                val = p.ctx.channels.get(ch)
+                if val:
+                    ctx_summary[ch] = val if isinstance(val, str) else str(val)[:500]
             self._trace("context", {"agent_id": p.agent_id,
                                      "agent": p.name,
-                                     "messages": api_msgs})
+                                     "agent_type": p.agent_type_name,
+                                     "phase": phase,
+                                     "prompt": prompt,
+                                     "action_schema": action_schema,
+                                     "context_channels": ctx_summary,
+                                     "api_messages": api_msgs})
             decision["phase_id"] = phase
             self._trace("decision", {"agent_id": p.agent_id,
                                      "agent": p.name,
@@ -476,6 +490,23 @@ class GameEngine:
             self._trace("action", {"agent_id": player.agent_id,
                                     "agent": player.name,
                                     "actions": actions})
+
+        # Kill → render event so the renderer can show the corpse
+        for a in actions:
+            if a.get("type") != "kill":
+                continue
+            victim = next((p for p in self.players.values()
+                           if p.name == a.get("victim")), None)
+            killer = next((p for p in self.players.values()
+                           if p.name == a.get("killer")), None)
+            if victim:
+                await self._emit("kill", "player_died", {
+                    "agent_id": victim.agent_id,
+                    "name": victim.name,
+                    "cause": "kill",
+                    "killed_by": killer.agent_id if killer else None,
+                    "tile": list(victim.tile),
+                })
 
         # Check for report/kill → voting transition
         trigger = None
@@ -566,67 +597,7 @@ class GameEngine:
                 targets.append(other)
         return targets
 
-    async def _kill_player(self, victim: PlayerState, killer: PlayerState):
-        victim.is_active = False
-        witnesses = [p.name for p in self._get_active_players()
-                     if p.agent_id not in (victim.agent_id, killer.agent_id)
-                     and self.map.distance(victim.tile, p.tile) <= self.cfg.witness_distance]
-        self._game_kills += 1
-        self._player_kills[killer.agent_id] = self._player_kills.get(killer.agent_id, 0) + 1
-        self.recent_events.append(
-            {"type": "kill", "victim": victim.name, "killer": killer.name,
-             "witnesses": witnesses})
-        await self._emit("combat", "kill", {
-            "agent_id": victim.agent_id,
-            "victim": victim.name, "killer": killer.name,
-            "killed_by": killer.agent_id,
-            "witnesses": witnesses})
-        self._trace("game_event", {"type": "kill", "killer": killer.name,
-                                    "victim": victim.name, "witnesses": witnesses})
-        print(f"{victim.name} was killed by {killer.name} — witnesses: {witnesses}")
-
-        # Push kill event into all agents' continuous event channel.
-        for p in self._get_active_players():
-            if p.agent_id == killer.agent_id:
-                p.ctx.add("events", f"You killed {victim.name}!")
-            elif p.name in witnesses:
-                p.ctx.add("events", f"YOU WITNESSED: {killer.name} killed {victim.name}!")
-            else:
-                p.ctx.add("events", f"{victim.name} was found dead!")
-
-        result = self.check_win_condition()
-        if result["game_over"]:
-            await self._end_game(result["winner"])
-            return
-        await self._emit("system", "system_message", {
-            "message": f"{victim.name} was found dead! Starting emergency meeting..."})
-        await self._start_voting()
-
     # ── Voting ────────────────────────────────────────────────────────
-
-    async def _start_voting(self):
-        print("══════════ VOTING STARTED ══════════")
-        self.phase = Phase.VOTING
-
-        # Use game phase if available
-        phase = self.game.current_phase if self.game else self.voting_phase
-        if phase:
-            self._state_timer = getattr(phase, 'timeout', self.cfg.vote_timeout)
-        else:
-            self._state_timer = self.cfg.vote_timeout
-
-        self._bump_phase()
-        self.vote_choices.clear()
-
-        if phase and hasattr(phase, 'on_start'):
-            phase.on_start(self)
-
-        active = self._get_active_players()
-        await self._emit("voting", "start", {
-            "active_players": len(active),
-            "active_agent_ids": [p.agent_id for p in active],
-            "timeout": int(self._state_timer),
-        })
 
     async def _finalize_voting(self):
         if self.phase != Phase.VOTING:
@@ -726,8 +697,6 @@ class GameEngine:
                 config_path = os.path.join(game_trace_dir, "config.json")
                 with open(config_path, "w") as cf:
                     json.dump(game_config, cf, indent=2)
-        self._trace("game_event", {"type": "game_start", "game_id": gid})
-
         active_ids = list(self.players.keys())
 
         # Delegate to game.setup() if a game is loaded
@@ -738,49 +707,57 @@ class GameEngine:
                 if p.ctx is None:
                     p.ctx = ContextManager(p.name)
                 p.ctx.set_constant("system", BASE_PROMPT)
-                p.agent.set_intro(BASE_PROMPT)
                 p.agent.tokens.reset()
             self.game.setup(self)
-            return
+        else:
+            # Fallback: generic role assignment from agent type config
+            self._groups.clear()
+            if not self._agent_types:
+                raise RuntimeError("No agent types configured — cannot build agent groups")
+            for at in self._agent_types:
+                self._groups[at.id] = AgentGroup(name=at.id, _engine=self)
 
-        # Fallback: generic role assignment from agent type config
-        self._groups.clear()
-        if not self._agent_types:
-            raise RuntimeError("No agent types configured — cannot build agent groups")
-        for at in self._agent_types:
-            self._groups[at.id] = AgentGroup(name=at.id, _engine=self)
+            # Assign players to agent types based on configured counts
+            type_assignments: list[str] = []
+            for at in self._agent_types:
+                type_assignments.extend([at.id] * at.count)
+            if len(type_assignments) < len(active_ids):
+                # Fallback: pad with first agent type
+                fallback = self._agent_types[0].id
+                type_assignments.extend([fallback] * (len(active_ids) - len(type_assignments)))
+            random.shuffle(type_assignments)
 
-        # Assign players to agent types based on configured counts
-        type_assignments: list[str] = []
-        for at in self._agent_types:
-            type_assignments.extend([at.id] * at.count)
-        if len(type_assignments) < len(active_ids):
-            # Fallback: pad with first agent type
-            fallback = self._agent_types[0].id
-            type_assignments.extend([fallback] * (len(active_ids) - len(type_assignments)))
-        random.shuffle(type_assignments)
+            for pi, pid in enumerate(active_ids):
+                p = self.players[pid]
+                p.agent_type_name = type_assignments[pi]
+                p.is_active = True
+                p.first_time = True
+                p.tile = self.map.random_walkable_tile()
+                # Initialise context manager — use AgentType config
+                at = next((t for t in self._agent_types if t.id == p.agent_type_name), None)
+                p.ctx = ContextManager(p.name)
+                p.ctx.set_constant("system", BASE_PROMPT)
+                if at and at.prompt:
+                    p.ctx.set_constant("role", at.prompt)
+                if at and at.context_manager and at.context_manager.base_prompt:
+                    p.ctx.set_constant("system", at.context_manager.base_prompt)
+                p.agent.tokens.reset()
 
-        player_list = []
-        for pi, pid in enumerate(active_ids):
-            p = self.players[pid]
-            p.agent_type_name = type_assignments[pi]
-            p.is_active = True
-            p.first_time = True
-            p.tile = self.map.random_walkable_tile()
-            # Initialise context manager — use AgentType config
-            at = next((t for t in self._agent_types if t.id == p.agent_type_name), None)
-            p.ctx = ContextManager(p.name)
-            p.ctx.set_constant("system", BASE_PROMPT)
-            if at and at.prompt:
-                p.ctx.set_constant("role", at.prompt)
-            if at and at.context_manager and at.context_manager.base_prompt:
-                p.ctx.set_constant("system", at.context_manager.base_prompt)
-            p.agent.set_intro(BASE_PROMPT)
-            p.agent.tokens.reset()
-            player_list.append({
-                "agent_id": p.agent_id, "name": p.name,
-                "tile": list(p.tile), "color_index": p.color_index})
+        # The system prompt is FIXED for the whole game — set once now,
+        # after roles are assigned. Per-turn info will be pushed onto the
+        # conversation stack as user messages.
+        for p in self.players.values():
+            p.agent.set_intro(p.ctx.build_system_prompt() or BASE_PROMPT)
 
+        # Emit game_start with spawn tiles in BOTH paths (the game branch
+        # used to return early, so the renderer never got spawn positions).
+        player_list = [{
+            "agent_id": p.agent_id, "name": p.name,
+            "tile": list(p.tile), "color_index": p.color_index}
+            for p in self.players.values()]
+
+        self._trace("game_event", {
+            "type": "game_start", "game_id": gid, "players": player_list})
         await self._emit("system", "game_start", {"game_id": gid, "players": player_list})
         await self._emit("system", "phase_change",
                          {"phase": "playing", "countdown_sec": self.cfg.game_max_length})
@@ -800,10 +777,14 @@ class GameEngine:
         self._trace("game_event", {"type": "game_end", "winner": reason})
         await self._emit("system", "system_message", {"message": msg})
         now_ts = datetime.now(timezone.utc).isoformat()
+        # Trial mode: server_handler sets TRIAL_INDEX — tag the recap so the
+        # bridge pushes it to games/TRIAL-### (unique per trial, collision-safe)
+        trial_index = os.environ.get("TRIAL_INDEX")
         recap = {
             "schema_version": "1.0",
             "session_id": self.events.session_id,
             "game_id": self.events.game_id,
+            "game_index": self.game_index,
             "started_at": getattr(self, "_game_started_at", None),
             "ended_at": now_ts,
             "duration_sec": time.time() - getattr(self, "_game_started_at_ts", time.time()),
@@ -815,6 +796,15 @@ class GameEngine:
                          "color": self.cfg.agent_colors[p.color_index % len(self.cfg.agent_colors)]}
                         for p in self.players.values()],
         }
+        if trial_index is not None:
+            try:
+                ti = int(trial_index)
+                recap["log_game_id"] = recap["game_id"]  # keep local GAME-NNN
+                recap["trial_index"] = ti
+                recap["game_index"] = ti
+                recap["game_id"] = f"TRIAL-{ti:03d}"
+            except ValueError:
+                pass
         for p in self.players.values():
             p.is_active = False
         await self._emit("system", "game_end", {"winner": reason, "recap": recap})
@@ -838,9 +828,12 @@ class GameEngine:
 
     async def run(self, max_games: Optional[int] = None) -> dict:
         print("[Engine] Starting...")
+        if self._experiment_config:
+            cfg = self._experiment_config
+            keys = ",".join(sorted(cfg.keys())) if isinstance(cfg, dict) else "?"
+            print(f"[Engine] config in use: {cfg.get('type', '?')}::{cfg.get('class', '?')} "
+                  f"trial_count={cfg.get('trial_count')} keys=[{keys}]")
         self.events.start_session()
-        # Send map data to both logs and Godot so the renderer can initialise
-        await self._emit("system", "map_data", self.map.serialize())
         # Also log the experiment config as a system event
         if self._experiment_config:
             self.events.log_event("system", "config", self._experiment_config)
@@ -848,6 +841,8 @@ class GameEngine:
 
         if self.render:
             await self.render.reconnect_loop()
+            # Send map data to Godot AFTER connection is established
+            await self._emit("system", "map_data", self.map.serialize())
         else:
             print("[Engine] Headless mode — no Godot renderer")
 
@@ -878,16 +873,16 @@ class GameEngine:
                 if self.phase in (Phase.PLAYING, Phase.VOTING):
                     result = self.check_win_condition()
                     if result["game_over"]:
+                        # No break — _end_game transitions back to STARTING,
+                        # so the next game starts (or max_games stops us).
                         await self._end_game(result["winner"])
-                        break
 
                 if self.phase == Phase.STARTING:
                     if self._state_timer <= 0:
-                        limit = max_games
-                        if self.game and self.game.game_count:
-                            limit = self.game.game_count if limit is None else min(limit, self.game.game_count)
-                        if limit is not None and self._game_index >= limit:
-                            print(f"[Engine] Reached game limit ({limit}) — stopping")
+                        # Only max_games (from run()) limits the engine now —
+                        # trial counting is handled by the jobs system.
+                        if max_games is not None and self._game_index >= max_games:
+                            print(f"[Engine] Reached game limit ({max_games}) — stopping")
                             summary = self._build_summary()
                             break
                         await self._start_game()
@@ -924,6 +919,9 @@ class GameEngine:
             self.events.end_session()
             self._close_trace()
             if self.render:
+                # Flush the socket before closing — otherwise the final
+                # events (e.g. game_end) never reach Godot.
+                await self.render.flush()
                 await self.render.close()
             print("[Engine] Stopped.")
         return summary

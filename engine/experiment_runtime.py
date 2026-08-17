@@ -78,22 +78,17 @@ def experiment_to_runtime(exp):
 
     win_conditions = exp.win_conditions or []
 
-    # Position mode — may be on play_phase or an action within it
+    # Position mode — on the play phase, which owns the map
     position_mode = None
     if play_phase:
         position_mode = getattr(play_phase, "position_mode", None)
-        if not position_mode:
-            for action in (play_phase.actions or []):
-                pm = getattr(action, "position_mode", None)
-                if pm:
-                    position_mode = pm
-                    break
 
-    # Map — from game.map or position_mode
-    map_data = exp.map
-    if map_data is None and position_mode and hasattr(position_mode, "map"):
+    # Map — from position_mode.map
+    map_data = None
+    if position_mode and hasattr(position_mode, "map"):
         map_data = position_mode.map
     if map_data is None:
+        print("[Runtime] No map on position_mode — falling back to SquareMap(16)")
         map_data = _get_square_map(16)
 
     return (config, play_phase, voting_phase, win_conditions, position_mode,

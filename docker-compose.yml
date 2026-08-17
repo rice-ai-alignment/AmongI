@@ -33,7 +33,6 @@ services:
     environment:
       - SERVER_NAME=${SERVER_NAME:-}
       - FIREBASE_CRED_PATH=firebase-key.json
-      - FIRESTORE_COLLECTION=${FIRESTORE_COLLECTION:-studies}
       - STUDY_ID=${STUDY_ID:-}
       - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-30}
 

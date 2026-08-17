@@ -30,7 +30,18 @@ class ExperimentComponent(ABC):
 
     params: dict[str, Param] = {}
 
+    # Metadata keys allowed in configs but not component params
+    _META_KEYS = {"id", "name", "description"}
+
     def __init__(self, **kwargs):
+        # Error on unknown kwargs — silent typos (e.g. `group` instead of
+        # `agent_type`) would otherwise default to wrong values silently.
+        known = set(self.params.keys()) | self._META_KEYS
+        unknown = [k for k in kwargs if k not in known]
+        if unknown:
+            raise ValueError(
+                f"{self.__class__.__name__}: unused parameter(s) "
+                f"{unknown} — known: {sorted(self.params.keys())}")
         for name, param in self.params.items():
             setattr(self, name, kwargs.get(name, param.default))
         self._validate()

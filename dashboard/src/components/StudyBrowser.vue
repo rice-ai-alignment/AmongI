@@ -12,6 +12,7 @@ const {
   user, studies, activeStudyId, loadStudies, createStudy, archiveStudy,
   experiments, activeExperimentId, studyExperiments, createExperiment, archiveExperiment,
   loadAllExperiments, loadExperiments, fetchData, setDescription, saveExperimentConfig,
+  duplicateStudy, duplicateExperiment,
 } = useFirestore();
 
 const emit = defineEmits(["browsing"]);
@@ -21,6 +22,8 @@ const descInput = ref("");
 const editingDesc = ref("");
 const creating = ref(false);
 const confirmArchive = ref(null); // { type: 'study'|'experiment', id, name }
+const confirmDuplicate = ref(null); // { type: 'study'|'experiment', id, name }
+const duplicating = ref(false);
 const studiesLabel = ref(null);
 const sideLabel = ref(null);
 
@@ -190,7 +193,7 @@ watch(activeStudyId, (id) => {
     <div class="card-grid">
       <div v-for="s in studies" :key="s.id" class="ascii-card" @click="selectStudy(s.id)">
         <div class="card-top">┌────────────────────────────────────────────────┐</div>
-        <div class="card-row">│ <TypedSpan class="card-name" :text="s.name" :speed="TYPE.slow" /> <span v-if="user" class="archive-btn" @click.stop="confirmArchive = { type: 'study', id: s.id, name: s.name }" title="archive">[x]</span></div>
+        <div class="card-row">│ <TypedSpan class="card-name" :text="s.name" :speed="TYPE.slow" /></div>
         <div class="card-row dim desc" @click.stop>
           │ <span v-if="editingDesc !== s.id" @click="editingDesc = s.id; descInput = s.description || ''">{{ s.description || '+ description' }}</span>
           <input v-else v-model="descInput" @keyup.enter="setDescription('study', s.id, null, descInput); editingDesc = ''; loadStudies()" @blur="setDescription('study', s.id, null, descInput); editingDesc = ''; loadStudies()" @keyup.escape="editingDesc = ''" class="card-inp" autofocus />
@@ -198,6 +201,10 @@ watch(activeStudyId, (id) => {
         <div class="card-row dim exp-in-card" v-for="e in (studyExperiments[s.id] || []).slice(0, 3)" :key="e.id" @click.stop="activeStudyId = s.id; selectExperiment(e.id)">│   ▸ <TypedSpan :text="e.name" :speed="TYPE.slow" /></div>
         <div class="card-row dim" v-if="!(studyExperiments[s.id]||[]).length">│   empty</div>
         <div class="card-bot">└────────────────────────────────────────────────┘</div>
+        <div class="card-actions" v-if="user" @click.stop>
+          <span class="act-btn" @click="confirmDuplicate = { type: 'study', id: s.id, name: s.name }">[ duplicate ]</span>
+          <span class="act-btn r-hov" @click="confirmArchive = { type: 'study', id: s.id, name: s.name }">[ archive ]</span>
+        </div>
       </div>
       <div class="ascii-card card-new" v-if="user" @click="createStudyPopup = true">
         <div class="card-top">┌─ new ─────────────────────────────────────────┐</div>
@@ -220,7 +227,10 @@ watch(activeStudyId, (id) => {
         @click="selectExperiment(e.id)"
       >
         <span class="exp-name"><TypedSpan :text="e.name" :speed="TYPE.slow" /></span>
-        <span v-if="user" class="archive-btn" @click.stop="confirmArchive = { type: 'experiment', id: e.id, name: e.name }" title="archive">[x]</span>
+        <span v-if="user" class="exp-acts" @click.stop>
+          <span class="act-btn" @click="confirmDuplicate = { type: 'experiment', id: e.id, name: e.name }">[ duplicate ]</span>
+          <span class="act-btn r-hov" @click="confirmArchive = { type: 'experiment', id: e.id, name: e.name }">[ archive ]</span>
+        </span>
       </div>
       <div class="exp-item dim" v-if="!experiments.length">  (empty)</div>
     </StaggerBlock>
@@ -246,6 +256,37 @@ watch(activeStudyId, (id) => {
           : archiveExperiment(confirmArchive.id);
       }
       confirmArchive = null;
+    }"
+  />
+
+  <!-- Duplicate popup — choose mode -->
+  <ConfirmPopup
+    v-if="confirmDuplicate"
+    :message="'duplicate ' + confirmDuplicate.name + '?'"
+    :buttons="[
+      { text: '[ cancel ]', action: 'cancel' },
+      { text: '[ settings only ]', action: 'settings' },
+      { text: '[ all data + logs ]', action: 'alldata' },
+    ]"
+    @action="async (act) => {
+      if (act === 'cancel') { confirmDuplicate = null; return; }
+      duplicating = true;
+      try {
+        const include = act === 'alldata';
+        if (confirmDuplicate.type === 'study') {
+          await duplicateStudy(confirmDuplicate.id, include);
+          await loadAllExperiments();
+        } else {
+          await duplicateExperiment(activeStudyId, confirmDuplicate.id, include);
+          await loadExperiments();
+        }
+        loadStudies();
+      } catch (e) {
+        console.error('duplicate failed:', e.message);
+      } finally {
+        duplicating = false;
+        confirmDuplicate = null;
+      }
     }"
   />
 
@@ -339,10 +380,30 @@ watch(activeStudyId, (id) => {
 .new-link:hover { color: var(--green); }
 .archive-btn {
   color: var(--text-dim); font-size: var(--fs-xs); cursor: pointer;
-  opacity: 0; transition: opacity 0.15s; flex-shrink: 0;
+  flex-shrink: 0;
 }
-.ascii-card:hover .archive-btn, .exp-item:hover .archive-btn { opacity: 0.6; }
-.archive-btn:hover { opacity: 1 !important; color: var(--red); }
+.archive-btn:hover { color: var(--red); }
+.dup-btn {
+  color: var(--text-dim); font-size: var(--fs-xs); cursor: pointer;
+  flex-shrink: 0;
+}
+.dup-btn:hover { color: var(--green); }
+
+/* Action buttons (always visible, below study card / beside experiment) */
+.card-actions {
+  display: flex; gap: var(--sp-sm);
+  padding: var(--sp-xxs) var(--sp-xs) var(--sp-xs);
+}
+.exp-acts {
+  display: inline-flex; gap: var(--sp-xs);
+  margin-left: auto; flex-shrink: 0;
+}
+.act-btn {
+  font-size: var(--fs-sm); color: var(--text-dim);
+  cursor: pointer; white-space: nowrap;
+}
+.act-btn:hover { color: var(--green); }
+.act-btn.r-hov:hover { color: var(--red); }
 .desc { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .creating { color: var(--amber); animation: pulse 1s ease-in-out infinite; }
 </style>

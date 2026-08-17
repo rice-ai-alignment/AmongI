@@ -4,6 +4,8 @@ import TypedSpan from "./TypedSpan.vue";
 import TerminalCard from "./TerminalCard.vue";
 import { TYPE } from "../composables/typeSettings.js";
 
+defineEmits(["rowClick"]);
+
 const props = defineProps({
   title: { type: String, default: "" },
   /**
@@ -29,6 +31,8 @@ const props = defineProps({
   collapsible: { type: Boolean, default: true },
   /** Skip TypedSpan for data rows — renders instantly (for live-updating data). */
   noType: { type: Boolean, default: false },
+  /** Make rows clickable, emitting rowClick(row, index). */
+  clickableRows: { type: Boolean, default: false },
 });
 
 const speed = computed(() => props.typeSpeed || TYPE.fast);
@@ -54,7 +58,7 @@ const table = computed(() => {
       ? col.header.padStart(widths[col.key])
       : col.header.padEnd(widths[col.key])
   );
-  const headerLine = `  <span class="tbl-hdr"><b>${headerParts.join("  ")}</b></span>`;
+  const headerLine = `<span class="tbl-hdr"><b>${headerParts.join("  ")}</b></span>`;
 
   // ---- build data rows ----
   const dataRows = props.rows.map((row, i) => {
@@ -84,13 +88,14 @@ const table = computed(() => {
       if (cell.cls) return `<span class="${cell.cls}">${padded}</span>`;
       return padded;
     });
-    return { delay: i * props.rowDelay, line: `  ${parts.join("  ")}` };
+    return { delay: i * props.rowDelay, line: `${parts.join("  ")}` };
   });
 
+  // column widths + (N-1)*2 gutters + 2 trailing
   const totalW =
     Object.values(widths).reduce((a, b) => a + b, 0) +
     (cols.length - 1) * 2 +
-    24; // leading spaces + gutters + safety
+    2;
   return { header: headerLine, rows: dataRows, width: Math.max(totalW, props.minWidth) };
 });
 </script>
@@ -101,9 +106,13 @@ const table = computed(() => {
       <div class="tbl-header">
         <TypedSpan :text="table.header" :speed="speed + 5" />
       </div>
-      <div v-for="r in table.rows" :key="r.delay">
+      <div
+        v-for="(r, ri) in table.rows" :key="r.delay"
+        class="tbl-row" :class="{ 'tbl-row-clickable': clickableRows }"
+        @click="clickableRows && $emit('rowClick', rows[ri], ri)"
+      >
         <TypedSpan v-if="!noType" :text="r.line" :speed="speed" :delay="r.delay" />
-        <span v-else v-html="' ' + r.line"></span>
+        <span v-else v-html="r.line"></span>
       </div>
     </div>
     <div v-else>
@@ -115,6 +124,17 @@ const table = computed(() => {
 <style scoped>
 .tbl-header {
   color: var(--text-dim);
-  padding-bottom: var(--sp-xxs);
+  padding: 0 0 var(--sp-xxs) 2ch;
+  white-space: pre;
+}
+.tbl-row {
+  white-space: pre;
+  padding-left: 2ch;
+}
+.tbl-row-clickable {
+  cursor: pointer;
+}
+.tbl-row-clickable:hover {
+  color: var(--text);
 }
 </style>

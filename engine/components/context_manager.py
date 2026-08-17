@@ -64,6 +64,7 @@ class ContextManager(ExperimentComponent):
         self.agent_name = agent_name
         self.first_turn = True
         self.channels: dict[str, ContextChannel] = {}
+        self._sent: dict[str, int] = {}   # per-channel cursor of sent items
 
         # Apply config channels if provided
         for ch_def in cfg_channels:
@@ -132,6 +133,37 @@ class ContextManager(ExperimentComponent):
             if ch.ctype == ChannelType.TEMPORARY:
                 ch.clear()
 
+        return "\n\n".join(parts)
+
+    def build_system_prompt(self) -> str:
+        """The FIXED system prompt — CONSTANT channels only. Sent once at
+        game start and never rebuilt; per-turn info goes in user messages."""
+        parts = []
+        for ch in self.channels.values():
+            if ch.ctype == ChannelType.CONSTANT and ch.items:
+                parts.append(ch.items[0])
+        return "\n\n".join(parts)
+
+    def build_user_message(self) -> str:
+        """Per-turn info as a conversation user message.
+
+        Only NEW items since the last call are included (continuous
+        channels keep a per-channel cursor), and temporary channels are
+        cleared after being sent. Constants are excluded — they live in
+        the fixed system prompt."""
+        parts = []
+        for name, ch in self.channels.items():
+            if ch.ctype == ChannelType.CONSTANT or not ch.items:
+                continue
+            if ch.ctype == ChannelType.CONTINUOUS:
+                new_items = ch.items[self._sent.get(name, 0):]
+                if new_items:
+                    parts.append(f"{name}:\n" + "\n".join(f"- {item}" for item in new_items))
+                self._sent[name] = len(ch.items)
+            elif ch.ctype == ChannelType.TEMPORARY:
+                if ch.items:
+                    parts.append(ch.items[0])
+                ch.clear()
         return "\n\n".join(parts)
 
     def build_messages(self) -> list[dict]:

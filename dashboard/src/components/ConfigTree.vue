@@ -7,6 +7,7 @@ import { TYPE } from "../composables/typeSettings.js";
 const props = defineProps({
   config: { type: Object, default: null },
   title: { type: String, default: "config" },
+  editable: { type: Boolean, default: false },
 });
 
 const schemaMap = ref({});
@@ -80,7 +81,13 @@ function getTooltip(type, cls) {
 }
 
 function esc(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // &quot; matters for attribute values (data-path/data-value) — without it,
+  // a quote inside the JSON terminates the attribute early.
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function fmtVal(v) {
@@ -154,8 +161,18 @@ function typeLabel(val, clsOverride) {
   return esc(String(val));
 }
 
+const PRIORITY = ["name", "description", "trial_count"];
+
 function nonMeta(obj) {
-  return Object.entries(obj).filter(([k]) => k !== "type" && k !== "class");
+  const entries = Object.entries(obj).filter(([k]) => k !== "type" && k !== "class");
+  entries.sort(([a], [b]) => {
+    const ai = PRIORITY.indexOf(a), bi = PRIORITY.indexOf(b);
+    if (ai >= 0 && bi >= 0) return ai - bi;
+    if (ai >= 0) return -1;
+    if (bi >= 0) return 1;
+    return a.localeCompare(b);
+  });
+  return entries;
 }
 
 function prefixHtml(segments) {
@@ -168,7 +185,15 @@ function connHtml(conn, cls) {
   return `<span class="${cls}">${conn}</span>`;
 }
 
-function build(obj, preSegs, isLast, blockCls, gidx) {
+function _leaf(v, p) {
+  const a = props.editable
+    ? ` data-leaf data-path="${esc(JSON.stringify(p))}" data-value="${esc(String(v ?? ''))}"`
+    : "";
+  return fmtVal(v).replace(/^<span/, `<span${a}`);
+}
+
+function build(obj, preSegs, isLast, blockCls, gidx, path) {
+  path = path || [];
   const lines = [];
   const entries = nonMeta(obj);
 
@@ -206,7 +231,7 @@ function build(obj, preSegs, isLast, blockCls, gidx) {
           const inner = {};
           for (const [k, v] of nonMeta(item)) inner[k] = v;
           if (Object.keys(inner).length) {
-            lines.push(...build(inner, jSegs, jlast, tc, gidx));
+            lines.push(...build(inner, jSegs, jlast, tc, gidx, [...path, key, j]));
           }
         } else {
           lines.push({
@@ -230,10 +255,10 @@ function build(obj, preSegs, isLast, blockCls, gidx) {
       const inner = {};
       for (const [k, v] of nonMeta(val)) inner[k] = v;
       if (Object.keys(inner).length) {
-        lines.push(...build(inner, childSegs, last, tc, gidx));
+        lines.push(...build(inner, childSegs, last, tc, gidx, [...path, key]));
       }
     } else {
-      const txt = (val && typeof val === "object") ? typeLabel(val, gidx) : fmtVal(val);
+      const txt = (val && typeof val === "object") ? typeLabel(val, gidx) : _leaf(val, [...path, key]);
       lines.push({ cls: blockCls, html: `${pre}${connHtml(conn, blockCls)}${keyHtml} ${txt}`, delay: 4 });
     }
   }
@@ -258,7 +283,7 @@ const lines = computed(() => {
     tooltip: rootTip.desc, source: rootTip.source, params: rootTip.params,
     typeName: props.config.type, className: props.config.class,
     delay: 0,
-  }, ...build(inner, [], true, rootCls, gidx)];
+  }, ...build(inner, [], true, rootCls, gidx, [])];
 });
 </script>
 

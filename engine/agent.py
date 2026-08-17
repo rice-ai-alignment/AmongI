@@ -26,12 +26,15 @@ dotenv.load_dotenv()
 MODEL = os.getenv("MODEL", "google/gemini-2.5-flash").strip()
 OPEN_ROUTER_API_KEY = os.getenv("OPEN_ROUTER_API_KEY", "")
 TOKEN_LIMIT = int(os.getenv("TOKEN_LIMIT", "100000"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
 VERBOSE = os.getenv("VERBOSE", "0").strip() == "1"
 
-# Shared LLM client
+# Shared LLM client — no SDK-level retries (a hung request would stall the
+# whole engine loop; the per-call timeout bounds each decision instead).
 _llm = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPEN_ROUTER_API_KEY,
+    max_retries=0,
 )
 
 
@@ -134,6 +137,13 @@ class Agent:
         intro = self.messages[0] if self.messages else None
         self.messages = [intro] if intro else []
 
+    def _trim_history(self, turns: int = 8) -> None:
+        """Keep the system prompt + the last N turns (user/assistant pairs)."""
+        system = self.messages[0] if self.messages and self.messages[0]["role"] == "system" else None
+        rest = [m for m in self.messages if m["role"] != "system"]
+        keep = rest[-turns * 2:]
+        self.messages = ([system] if system else []) + keep
+
     def think(self, context: dict) -> dict:
         """Call the LLM and return a decision dict. Synchronous (run in thread)."""
         action_schema = context.get("action_schema", {})
@@ -148,17 +158,19 @@ class Agent:
         if not prompt:
             return self._safe_default(is_voting)
 
-        # Build API messages from the prompt
-        api_messages = [{"role": "system", "content": prompt}]
-        # Include last few assistant messages for conversation continuity
-        assistant_msgs = [m for m in self.messages if m["role"] == "assistant"]
-        api_messages.extend(assistant_msgs[-5:])
+        # The system prompt (self.messages[0]) stays FIXED. Per-turn info
+        # goes on the stack as a user message, decisions as assistant
+        # messages — so outputs sit between the events that caused them.
+        self.messages.append({"role": "user", "content": prompt})
+        self._trim_history()
+        api_messages = list(self.messages)
         self.last_api_messages = api_messages
 
         try:
             ActionModel = get_action_model(action_schema)
             completion = _llm.chat.completions.create(
                 model=MODEL, messages=api_messages,
+                timeout=LLM_TIMEOUT,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
@@ -184,6 +196,7 @@ class Agent:
 
             # Append decision to persistent history
             self.messages.append({"role": "assistant", "content": json.dumps(decision)})
+            self._trim_history()
             return decision
 
         except TokenBudgetExceeded:

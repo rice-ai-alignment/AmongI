@@ -33,6 +33,12 @@ service cloud.firestore {
 
           // Study owner or server (admin SDK) can write
           allow write: if get(/databases/$(database)/documents/studies/$(studyId)).data.owner == request.auth.uid;
+
+          // Trace subcollection (per-game event logs)
+          match /trace/{traceId} {
+            allow read: if true;
+            allow write: if get(/databases/$(database)/documents/studies/$(studyId)).data.owner == request.auth.uid;
+          }
         }
 
         // ── Archived Data ─────────────────────────────────────────
@@ -81,6 +87,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── Tokens ────────────────────────────────────────────────────
+    match /tokens/{tokenId} {
+      // Only admins can read/write tokens (they contain API keys)
+      allow read, write: if request.auth != null
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.is_admin == true;
+    }
+
     // ── Users ────────────────────────────────────────────────────
     match /users/{userId} {
       // Anyone authenticated can read user profiles (needed for admin panel)
@@ -91,9 +104,14 @@ service cloud.firestore {
                     && request.auth.uid == userId
                     && request.resource.data.can_run_experiments == false;
 
-      // Admins can update any user (including permissions)
+      // Admins can update any user (including permissions).
+      // Guard: updating a doc that currently has is_admin:true must
+      // explicitly include is_admin in the request — prevents a full-doc
+      // .set() from silently wiping admin status (field dropped → denied).
       allow update: if request.auth != null
-                    && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.is_admin == true;
+                    && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.is_admin == true
+                    && (!resource.data.get('is_admin', false)
+                        || request.resource.data.keys().hasAll(['is_admin']));
 
       // Non-admin users can update their own profile but cannot change permissions
       allow update: if request.auth != null
