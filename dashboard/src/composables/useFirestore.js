@@ -442,6 +442,49 @@ async function updateUserPermissions(uid, updates) {
   console.log("[dashboard] Updated user", uid, allowed);
 }
 
+// ── Public landing page (aggregated live stats, no auth required) ────
+const publicExperiments = ref([]);
+const publicLoading = ref(false);
+
+async function loadPublicExperiments() {
+  const d = db();
+  if (!d) return;
+  publicLoading.value = true;
+  try {
+    const studiesSnap = await d.collection(COLLECTION)
+      .orderBy("created_at", "desc").get();
+    const activeStudies = studiesSnap.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .filter(s => s.status !== "archived");
+
+    const list = [];
+    for (const s of activeStudies) {
+      const expSnap = await d.collection(COLLECTION).doc(s.id)
+        .collection("experiments").orderBy("created_at", "desc").get();
+      for (const expDoc of expSnap.docs) {
+        const data = expDoc.data();
+        if (data.status === "archived") continue;
+        if (!data.total_games) continue;
+
+        let recent_games = [];
+        try {
+          const gamesSnap = await d.collection(COLLECTION).doc(s.id)
+            .collection("experiments").doc(expDoc.id)
+            .collection("games").orderBy("ended_at", "desc").limit(6).get();
+          recent_games = gamesSnap.docs.map(g => g.data()).reverse();
+        } catch (e) { /* index or read issue — skip ticker for this experiment */ }
+
+        list.push({ studyId: s.id, studyName: s.name, id: expDoc.id, ...data, recent_games });
+      }
+    }
+    publicExperiments.value = list;
+  } catch (e) {
+    console.error("[dashboard] loadPublicExperiments failed:", e.message);
+  } finally {
+    publicLoading.value = false;
+  }
+}
+
 // ── Config from Firestore ───────────────────────────────────────────
 async function saveExperimentConfig(studyId, expId, configObj) {
   const d = db();
@@ -491,5 +534,7 @@ export function useFirestore() {
     allJobs, watchAllJobs, stopAllJobsWatch,
     // config
     loadExperimentConfig, saveExperimentConfig, clearExperimentData,
+    // public landing page
+    publicExperiments, publicLoading, loadPublicExperiments,
   };
 }
