@@ -1,7 +1,7 @@
 """games.among_us.phases — Play and Voting phases for Among Us."""
 
 from experiment import Param
-from games.base import GamePhase
+from games.base import GamePhase, TargetedAction
 
 
 class PlayPhase(GamePhase):
@@ -38,13 +38,29 @@ class PlayPhase(GamePhase):
                     "to": {"x": nx, "y": ny},
                 })
 
-        # ── Actions (attack, chat, etc.) ──
+        # ── Actions (attack, report, etc.) ──
+        # Two action families share this list with different execute()
+        # contracts:
+        #   - TargetedAction (games.base) takes the raw decision value
+        #     (e.g. the target's name string) as its second argument.
+        #   - Generic AgentAction (components.actions) takes the FULL
+        #     decision dict and reads its own keys from it.
+        # Movement and chat are handled natively by this phase (above /
+        # below), so generic MoveAction/ChatAction entries are skipped —
+        # otherwise chat would be routed twice AND a chat string would be
+        # passed to ChatAction.execute, which calls .get() on it and
+        # crashes with "'str' object has no attribute 'get'".
         for action in self.actions:
             if not self.has_action_for(player.agent_type_name, action.action_key):
                 continue
+            if action.action_key in ("chat", "move"):
+                continue
             value = decision.get(action.action_key)
             if value and value not in ("none", ""):
-                result = action.execute(player, value, engine)
+                if isinstance(action, TargetedAction):
+                    result = action.execute(player, value, engine)
+                else:
+                    result = action.execute(player, decision, engine)
                 if result:
                     results.extend(result if isinstance(result, list) else [result])
 

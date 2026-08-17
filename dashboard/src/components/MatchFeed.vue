@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from "vue";
 import AsciiTable from "./AsciiTable.vue";
+import { guessClass } from "../composables/experimentStats.js";
 
 const props = defineProps({ games: Array });
 
@@ -24,8 +25,7 @@ function fmtDur(sec) {
 
 function formatCell(key, value, row) {
   if (key === "winner") {
-    const cls = value === "crewmates" ? "g" : value === "imposters" ? "r" : "a";
-    return { text: value, cls };
+    return { text: value, cls: guessClass(value) };
   }
   return { text: value };
 }

@@ -12,6 +12,7 @@ const { loadExperimentTrials, requestJobRender, loadJob, user } = useFirestore()
 
 const trials = ref(null);   // {list, claimedBy, completedBy, versions, errors}
 const loadingTrials = ref(false);
+const expandedError = ref(null);  // trial index whose full traceback is shown
 
 const jobLive = ref(null);  // periodically re-fetched job doc (render info)
 const requesting = ref(false);
@@ -142,8 +143,14 @@ const totalTrials = (j) => j.result?.trial_count ?? "-";
                 <span v-if="trials.claimedBy[i]" class="dim">by {{ trials.claimedBy[i] }}</span>
                 <span v-if="trials.completedBy[i]" class="dim">done {{ trials.completedBy[i] }}</span>
                 <span v-if="trials.versions[i]" class="dim">v{{ trials.versions[i] }}</span>
-                <span v-if="trials.errors[i]" class="r" :title="cleanError(trials.errors[i])">✗ {{ cleanError(trials.errors[i]).slice(0, 60) }}</span>
+                <span v-if="trials.errors[i]" class="r err-link"
+                      :title="cleanError(trials.errors[i])"
+                      @click="expandedError = expandedError === i ? null : i">
+                  ✗ {{ cleanError(trials.errors[i]).slice(0, 60) }}
+                  <span class="dim">[{{ expandedError === i ? 'hide' : 'trace' }}]</span>
+                </span>
               </div>
+              <pre v-if="expandedError === i && trials.errors[i]" class="error-msg">{{ trials.errors[i] }}</pre>
             </div>
             <div v-else class="dim">(no trials recorded)</div>
 
@@ -194,6 +201,8 @@ const totalTrials = (j) => j.result?.trial_count ?? "-";
   font-size: var(--fs-sm); line-height: var(--lh-body);
   max-height: 200px; overflow-y: auto;
 }
+.err-link { cursor: pointer; }
+.err-link:hover { text-decoration: underline; }
 .trials-hdr { margin-top: var(--sp-sm); }
 .trial-chips {
   display: flex; flex-wrap: wrap; gap: var(--sp-xxs) var(--sp-sm);

@@ -1,0 +1,146 @@
+[Bridge] Firestore connected
+[ServerHandler] Registered as 'callisto' (1 workers, hostname=callisto)
+[ServerHandler] 1 job workers started
+[Bridge] Study + experiment verified: studies/EngineTest/experiments/test3
+[ServerHandler] Claimed job K59p8wRtPOjqmnSUNwg3: EngineTest/test3
+[ServerHandler] Loaded config from studies/EngineTest/experiments/test3: Game::AmongUsGame trial_count=5 keys=[agents,class,description,name,phases,trial_count,type,win_conditions]
+[Map] Square arena 16x16 (256 walkable)
+[Bridge] No session logs found in /home/callisto/Code/Clubs/RAIA/AmongI/log/K59p8wRtPOjqmnSUNwg3
+[ServerHandler] Job K59p8wRtPOjqmnSUNwg3 completed (0 trials)
+[Bridge] Firestore connected
+[ServerHandler] Registered as 'callisto' (1 workers, hostname=callisto)
+[ServerHandler] 1 job workers started
+[Bridge] Study + experiment verified: studies/EngineTest/experiments/test3
+[ServerHandler] Claimed job 8v0JhUIzqBlSDo7myDIC: EngineTest/test3
+[ServerHandler] Loaded config from studies/EngineTest/experiments/test3: Game::AmongUsGame trial_count=5 keys=[agents,class,description,name,phases,trial_count,type,win_conditions]
+[Map] Square arena 16x16 (256 walkable)
+[Bridge] No session logs found in /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC
+[ServerHandler] Job 8v0JhUIzqBlSDo7myDIC: running trial 0
+[Engine] Starting...
+[Engine] config in use: Game::AmongUsGame trial_count=5 keys=[agents,class,description,name,phases,trial_count,type,win_conditions]
+[EventStore] Session started: /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-31-37.jsonl
+[Engine] Trace log: /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-31-37/trace.jsonl
+[Engine] Config exported: /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-31-37/config.json
+[Engine] Headless mode — no Godot renderer
+[Engine] 5 players ready (token budget: 100000)
+[Bridge] New session: /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-31-37.jsonl
+[EventStore] Game started: GAME-001 -> /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-31-37/GAME-001.jsonl
+Game GAME-001 Starting!
+[Crewmate]: ['Red', 'Blue', 'Green', 'Pink']
+[Imposter]: ['Orange']
+[Crewmate]: ['Red', 'Blue', 'Green', 'Pink']
+[Imposter]: ['Orange']
+[TOKEN] Pink | prompt=301 completion=45 total=346 cumulative=346/100000
+[TOKEN] Green | prompt=316 completion=51 total=367 cumulative=367/100000
+[TOKEN] Blue | prompt=299 completion=45 total=344 cumulative=344/100000
+[TOKEN] Red | prompt=317 completion=44 total=361 cumulative=361/100000
+[TOKEN] Orange | prompt=312 completion=51 total=363 cumulative=363/100000
+[TOKEN] Pink | prompt=484 completion=48 total=532 cumulative=878/100000[TOKEN] Blue | prompt=492 completion=49 total=541 cumulative=885/100000
+
+[TOKEN] Green | prompt=519 completion=50 total=569 cumulative=936/100000
+[TOKEN] Orange | prompt=511 completion=48 total=559 cumulative=922/100000
+[TOKEN] Red | prompt=516 completion=50 total=566 cumulative=927/100000
+[TOKEN] Pink | prompt=671 completion=49 total=720 cumulative=1598/100000
+[TOKEN] Red | prompt=729 completion=50 total=779 cumulative=1706/100000
+[TOKEN] Green | prompt=722 completion=52 total=774 cumulative=1710/100000
+[TOKEN] Orange | prompt=713 completion=51 total=764 cumulative=1686/100000
+[TOKEN] Blue | prompt=690 completion=49 total=739 cumulative=1624/100000
+[TOKEN] Blue | prompt=893 completion=54 total=947 cumulative=2571/100000[TOKEN] Green | prompt=931 completion=46 total=977 cumulative=2687/100000
+
+[TOKEN] Pink | prompt=852 completion=47 total=899 cumulative=2497/100000
+[TOKEN] Orange | prompt=937 completion=53 total=990 cumulative=2676/100000
+[TOKEN] Red | prompt=934 completion=42 total=976 cumulative=2682/100000
+[TOKEN] Red | prompt=1138 completion=43 total=1181 cumulative=3863/100000
+[TOKEN] Blue | prompt=1085 completion=42 total=1127 cumulative=3698/100000
+[TOKEN] Pink | prompt=1031 completion=45 total=1076 cumulative=3573/100000
+[TOKEN] Green | prompt=1140 completion=48 total=1188 cumulative=3875/100000
+[TOKEN] Orange | prompt=1176 completion=52 total=1228 cumulative=3904/100000
+[TOKEN] Green | prompt=1354 completion=23 total=1377 cumulative=5252/100000
+[TOKEN] Blue | prompt=1257 completion=33 total=1290 cumulative=4988/100000
+[TOKEN] Orange | prompt=1380 completion=29 total=1409 cumulative=5313/100000
+[TOKEN] Pink | prompt=1189 completion=25 total=1214 cumulative=4787/100000
+VOTING: All voted — finalizing early!
+VOTING: Finalizing — 4 votes cast
+══════════ VOTING ENDED — returning to PLAYING ══════════
+Game Over! Crewmate win!
+[EventStore] Game ended: GAME-001 (38 events)
+[Bridge] Trace → GCS: https://firebasestorage.googleapis.com/v0/b/raia-labs.firebasestorage.app/o/EngineTest%2Ftest3%2FTRIAL-000%2Ftrace.jsonl?alt=media&token=2f2f75bc-dc9d-4a8d-889b-e91deedd7826
+[Bridge] Pushed trace for TRIAL-000 (89 events, 173220 bytes)
+[Bridge] Game log → GCS: https://firebasestorage.googleapis.com/v0/b/raia-labs.firebasestorage.app/o/EngineTest%2Ftest3%2FTRIAL-000%2Fgame.jsonl?alt=media&token=7356d9d8-f125-4eb2-ad41-fd4544a003ca
+[Bridge] Session log → GCS: https://firebasestorage.googleapis.com/v0/b/raia-labs.firebasestorage.app/o/EngineTest%2Ftest3%2FTRIAL-000%2Fsession.jsonl?alt=media&token=30a7031d-2c17-48d9-9801-4790b521fac0
+[Bridge] Pushed per-game config for GAME-001
+[Bridge] Pushed TRIAL-000 to studies/EngineTest/experiments/test3 (1 games, 1 kills)
+[Engine] Reached game limit (1) — stopping
+[EventStore] Session ended: SESSION-2026-08-17T19-31-37 (45 events, 1 games)
+[Engine] Stopped.
+[ServerHandler] Trial 0 done: {"session_id": "SESSION-2026-08-17T19-31-37", "games": 1, "total_kills": 1, "total_ejections": 1, "by_winner": {}, "recaps": [{"schema_version": "1.0", "session_id": "SESSION-2026-08-17T19-31-37", "ga
+[ServerHandler] Job 8v0JhUIzqBlSDo7myDIC: running trial 2
+[Engine] Starting...
+[Engine] config in use: Game::AmongUsGame trial_count=5 keys=[agents,class,description,name,phases,trial_count,type,win_conditions]
+[EventStore] Session started: /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-32-33.jsonl
+[Engine] Trace log: /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-32-33/trace.jsonl
+[Engine] Config exported: /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-32-33/config.json
+[Engine] Headless mode — no Godot renderer
+[Engine] 5 players ready (token budget: 100000)
+[Bridge] New session: /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-32-33.jsonl
+[EventStore] Game started: GAME-001 -> /home/callisto/Code/Clubs/RAIA/AmongI/log/8v0JhUIzqBlSDo7myDIC/SESSION-2026-08-17T19-32-33/GAME-001.jsonl
+Game GAME-001 Starting!
+[Crewmate]: ['Red', 'Blue', 'Green', 'Pink']
+[Imposter]: ['Orange']
+[Crewmate]: ['Red', 'Blue', 'Green', 'Pink']
+[Imposter]: ['Orange']
+[TOKEN] Red | prompt=333 completion=48 total=381 cumulative=381/100000
+[TOKEN] Pink | prompt=316 completion=51 total=367 cumulative=367/100000
+[TOKEN] Green | prompt=347 completion=44 total=391 cumulative=391/100000
+[TOKEN] Blue | prompt=356 completion=46 total=402 cumulative=402/100000
+[TOKEN] Orange | prompt=376 completion=52 total=428 cumulative=428/100000
+[TOKEN] Pink | prompt=527 completion=46 total=573 cumulative=940/100000
+[TOKEN] Orange | prompt=598 completion=51 total=649 cumulative=1077/100000
+[TOKEN] Red | prompt=549 completion=52 total=601 cumulative=982/100000
+[TOKEN] Blue | prompt=565 completion=48 total=613 cumulative=1015/100000
+[TOKEN] Green | prompt=562 completion=55 total=617 cumulative=1008/100000
+[TOKEN] Blue | prompt=773 completion=45 total=818 cumulative=1833/100000
+[TOKEN] Pink | prompt=732 completion=50 total=782 cumulative=1722/100000
+[TOKEN] Green | prompt=773 completion=50 total=823 cumulative=1831/100000
+[TOKEN] Red | prompt=758 completion=43 total=801 cumulative=1783/100000
+[TOKEN] Orange | prompt=816 completion=56 total=872 cumulative=1949/100000
+[TOKEN] Green | prompt=978 completion=41 total=1019 cumulative=2850/100000
+[TOKEN] Orange | prompt=1028 completion=55 total=1083 cumulative=3032/100000
+[TOKEN] Blue | prompt=977 completion=47 total=1024 cumulative=2857/100000
+[TOKEN] Pink | prompt=938 completion=43 total=981 cumulative=2703/100000
+[TOKEN] Red | prompt=963 completion=50 total=1013 cumulative=2796/100000
+[TOKEN] Orange | prompt=1232 completion=56 total=1288 cumulative=4320/100000
+[TOKEN] Blue | prompt=1176 completion=39 total=1215 cumulative=4072/100000
+[TOKEN] Pink | prompt=1135 completion=49 total=1184 cumulative=3887/100000
+[TOKEN] Red | prompt=1164 completion=51 total=1215 cumulative=4011/100000
+[TOKEN] Green | prompt=1174 completion=54 total=1228 cumulative=4078/100000
+[TOKEN] Blue | prompt=1374 completion=49 total=1423 cumulative=5495/100000
+[TOKEN] Pink | prompt=1338 completion=46 total=1384 cumulative=5271/100000
+[TOKEN] Red | prompt=1371 completion=49 total=1420 cumulative=5431/100000
+[TOKEN] Orange | prompt=1443 completion=52 total=1495 cumulative=5815/100000
+[TOKEN] Green | prompt=1381 completion=49 total=1430 cumulative=5508/100000
+[TOKEN] Pink | prompt=1537 completion=42 total=1579 cumulative=6850/100000
+[TOKEN] Green | prompt=1581 completion=42 total=1623 cumulative=7131/100000
+[TOKEN] Blue | prompt=1571 completion=43 total=1614 cumulative=7109/100000
+[TOKEN] Orange | prompt=1652 completion=52 total=1704 cumulative=7519/100000
+[TOKEN] Red | prompt=1575 completion=51 total=1626 cumulative=7057/100000
+[TOKEN] Orange | prompt=1852 completion=54 total=1906 cumulative=9425/100000
+[TOKEN] Blue | prompt=1763 completion=44 total=1807 cumulative=8916/100000
+[TOKEN] Red | prompt=1773 completion=50 total=1823 cumulative=8880/100000
+[TOKEN] Green | prompt=1781 completion=48 total=1829 cumulative=8960/100000
+[TOKEN] Pink | prompt=1728 completion=46 total=1774 cumulative=8624/100000
+[TOKEN] Red | prompt=1904 completion=48 total=1952 cumulative=10832/100000
+[TOKEN] Pink | prompt=1869 completion=44 total=1913 cumulative=10537/100000
+[TOKEN] Green | prompt=1899 completion=50 total=1949 cumulative=10909/100000
+[TOKEN] Orange | prompt=1973 completion=46 total=2019 cumulative=11444/100000
+[TOKEN] Blue | prompt=1865 completion=42 total=1907 cumulative=10823/100000
+[TOKEN] Pink | prompt=1852 completion=44 total=1896 cumulative=12433/100000
+[TOKEN] Blue | prompt=1854 completion=45 total=1899 cumulative=12722/100000
+[TOKEN] Red | prompt=1892 completion=45 total=1937 cumulative=12769/100000
+[TOKEN] Orange | prompt=1961 completion=47 total=2008 cumulative=13452/100000
+[TOKEN] Green | prompt=1889 completion=42 total=1931 cumulative=12840/100000
+[TOKEN] Orange | prompt=1949 completion=45 total=1994 cumulative=15446/100000
+[TOKEN] Pink | prompt=1846 completion=42 total=1888 cumulative=14321/100000
+[TOKEN] Green | prompt=1880 completion=42 total=1922 cumulative=14762/100000
+[TOKEN] Blue | prompt=1843 completion=49 total=1892 cumulative=14614/100000
+[TOKEN] Red | prompt=1888 completion=45 total=1933 cumulative=14702/100000

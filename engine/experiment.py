@@ -258,6 +258,13 @@ class ExperimentBuilder:
             for key, val in data.items():
                 if key in ("type", "class"):
                     continue
+                if key == "references":
+                    # Pre-declared shared components (by id) that other
+                    # nodes point at with Ref(ref="...") — build them into
+                    # the registry but don't pass them to the constructor.
+                    for item in val:
+                        cls._build_node(item, registry)
+                    continue
                 kwargs[key] = cls._build_node(val, registry)
 
             instance = comp_cls(**kwargs)
