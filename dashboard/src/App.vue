@@ -267,6 +267,7 @@ onUnmounted(() => {
         <span class="tb-path"><TypedSpan :text="pathText" :speed="TYPE.normal" :key="pathText" /></span>
       </span>
       <span class="tb-actions">
+        <a class="tb-btn" href="/" title="public TV stats view" style="text-decoration:none">tv view</a>
         <template v-if="user">
           <span class="tb-user">{{ user.displayName }}</span>
           <button class="tb-btn" @click="signOut">logout</button>
