@@ -8,3 +8,4 @@ logs/
 __pycache__/
 firebase-key.json
 .venv
+*.log
