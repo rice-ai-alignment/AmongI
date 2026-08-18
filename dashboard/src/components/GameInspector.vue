@@ -2,7 +2,6 @@
 import { ref, computed } from "vue";
 import { useFirestore } from "../composables/useFirestore.js";
 import TerminalCard from "./TerminalCard.vue";
-import TypedLines from "./TypedLines.vue";
 
 const { games, activeStudyId, activeExperimentId, loadGameTrace } = useFirestore();
 
@@ -14,8 +13,15 @@ const traceLoading = ref(false);
 const viewMode = ref("readable"); // "readable" | "raw"
 const expandedEvent = ref(null);  // parsed trace event shown in the detail popup
 
+// Trials ordered by their numeric index (GAME-001, TRIAL-002, ...) —
+// the games collection arrives unsorted, so sort on the id suffix.
+const trialNum = (g) => {
+  const m = String(g.game_id || "").match(/(\d+)\s*$/);
+  return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
+};
+
 const gameList = computed(() =>
-  (games.value || []).map((g, i) => ({
+  [...(games.value || [])].sort((a, b) => trialNum(a) - trialNum(b)).map((g, i) => ({
     index: i,
     id: g.game_id || `game-${i + 1}`,
     winner: g.winner || "?",
@@ -176,25 +182,27 @@ async function loadTrace() {
           :collapsible="false"
         >
           <div class="detail-popup">
+            <!-- Rendered instantly — these blocks can be very long (full
+                 prompts / api message lists), typing them is too slow. -->
             <template v-if="expandedEvent.raw.prompt">
               <div class="g detail-hdr">▸ prompt</div>
-              <TypedLines :text="expandedEvent.raw.prompt" clazz="detail-block" />
+              <pre class="detail-block">{{ expandedEvent.raw.prompt }}</pre>
             </template>
             <template v-if="expandedEvent.raw.action_schema">
               <div class="g detail-hdr">▸ action schema</div>
-              <TypedLines :text="JSON.stringify(expandedEvent.raw.action_schema, null, 2)" clazz="detail-block" />
+              <pre class="detail-block">{{ JSON.stringify(expandedEvent.raw.action_schema, null, 2) }}</pre>
             </template>
             <template v-if="expandedEvent.raw.context_channels">
               <div class="g detail-hdr">▸ context channels</div>
-              <TypedLines :text="JSON.stringify(expandedEvent.raw.context_channels, null, 2)" clazz="detail-block" />
+              <pre class="detail-block">{{ JSON.stringify(expandedEvent.raw.context_channels, null, 2) }}</pre>
             </template>
             <template v-if="expandedEvent.raw.api_messages">
               <div class="g detail-hdr">▸ api messages</div>
-              <TypedLines :text="JSON.stringify(expandedEvent.raw.api_messages, null, 2)" clazz="detail-block" />
+              <pre class="detail-block">{{ JSON.stringify(expandedEvent.raw.api_messages, null, 2) }}</pre>
             </template>
             <template v-if="expandedEvent.raw.decision">
               <div class="g detail-hdr">▸ decision</div>
-              <TypedLines :text="JSON.stringify(expandedEvent.raw.decision, null, 2)" clazz="detail-block" />
+              <pre class="detail-block">{{ JSON.stringify(expandedEvent.raw.decision, null, 2) }}</pre>
             </template>
             <div class="popup-acts">
               <span class="pop-link" @click="expandedEvent = null">[ close ]</span>

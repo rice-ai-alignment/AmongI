@@ -21,6 +21,7 @@ import DocsPanel from "./components/DocsPanel.vue";
 import TerminalCard from "./components/TerminalCard.vue";
 import CopyButton from "./components/CopyButton.vue";
 import LandingPage from "./components/LandingPage.vue";
+import OrigLandingPage from "./components/OrigLandingPage.vue";
 
 const {
   user, authReady, initAuth, signIn, signOut,
@@ -36,7 +37,7 @@ const {
 const browsing = ref(true);
 const interval = ref(10);
 const activeTab = ref("stats");   // "stats" | "config" | "jobs" (sub-tabs under experiments)
-// "home" | "experiments" | "documentation" | "servers" | "admin"
+// "home" | "orig-home" | "experiments" | "documentation" | "servers" | "admin"
 const navMode = ref(window.location.pathname === "/" ? "home" : "experiments");
 const configJson = ref(null);
 const configLoading = ref(false);
@@ -66,6 +67,7 @@ const expName = computed(() => experiments.value.find(e => e.id === activeExperi
 // Titlebar path
 const pathText = computed(() => {
   if (navMode.value === "home") return "~/";
+  if (navMode.value === "orig-home") return "~/orig-home";
   if (navMode.value === "servers") return "~/servers";
   if (navMode.value === "documentation") return "~/documentation";
   if (navMode.value === "admin") return "~/admin";
@@ -282,6 +284,10 @@ function syncURL() {
     window.history.replaceState({}, "", "/");
     return;
   }
+  if (navMode.value === "orig-home") {
+    window.history.replaceState({}, "", "/orig-home");
+    return;
+  }
   if (navMode.value === "servers") {
     window.history.replaceState({}, "", "/servers");
     return;
@@ -336,6 +342,11 @@ onMounted(async () => {
 
   // Restore navigation state from URL
   const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts[0] === "orig-home") {
+    navMode.value = "orig-home";
+    syncURL();
+    return;
+  }
   if (parts[0] === "studies" && parts[1]) {
     const s = studies.value.find(s => s.id === parts[1] || s.name === parts[1]);
     if (s) {
@@ -363,6 +374,12 @@ onUnmounted(() => {
 <template>
   <!-- Terminal window -->
   <div class="terminal">
+    <!-- Starfield from the original TV landing page, behind all content -->
+    <div class="starfield" aria-hidden="true"></div>
+
+    <!-- CRT overlay: scanlines + vignette (riceaialignment.com style) -->
+    <div class="crt" aria-hidden="true"></div>
+
     <!-- Title bar -->
     <div class="term-titlebar">
       <span class="tb-title">
@@ -382,6 +399,8 @@ onUnmounted(() => {
     <div class="term-body">
       <!-- Top-level nav -->
       <div class="top-nav">
+        <!-- `orig-home` (original TV landing) is disabled — code kept in
+             OrigLandingPage.vue for reference; still reachable at /orig-home -->
         <span class="tab" :class="{ active: navMode === 'home' }" @click="navMode = 'home'">[ home ]</span>
         <span class="tab" :class="{ active: navMode === 'experiments' }" @click="navMode = 'experiments'">[ experiments ]</span>
         <span class="tab" :class="{ active: navMode === 'documentation' }" @click="navMode = 'documentation'">[ documentation ]</span>
@@ -408,6 +427,11 @@ onUnmounted(() => {
       <!-- Home view — live stats, same terminal shell -->
       <div class="term-content" v-if="navMode === 'home'" style="flex-direction:column; gap:10px; overflow:hidden;">
         <LandingPage />
+      </div>
+
+      <!-- Original TV landing page (git: 045aabc) — full-screen overlay -->
+      <div class="term-content" v-if="navMode === 'orig-home'">
+        <OrigLandingPage @back="navMode = 'home'" />
       </div>
 
       <!-- Experiments view -->
@@ -551,16 +575,16 @@ onUnmounted(() => {
 <style>
 /* ── Design tokens ─────────────────────────────────────────────────── */
 :root {
-  /* Backgrounds */
-  --bg-deep:    #020302;
-  --bg:         #060806;
-  --surface-1:  #0b0f0b;
-  --surface-2:  #0f140f;
-  --border:     #1a2a1a;
+  /* Backgrounds — green-tinted darks (riceaialignment.com palette) */
+  --bg-deep:    #030503;
+  --bg:         #070a07;
+  --surface-1:  #0c110c;
+  --surface-2:  #0f150f;
+  --border:     #1a2418;
 
-  /* Text */
-  --text:       #c8dcc8;
-  --text-dim:   #7d947d;
+  /* Text — phosphor-tinted off-white + muted sage */
+  --text:       #e9f2e4;
+  --text-dim:   #798774;
 
   /* Accent */
   --green:      #4fe87c;
@@ -647,15 +671,54 @@ body {
 /* ── Terminal window ────────────────────────────────────────────────── */
 .terminal {
   width: 100%; height: 100vh;
+  position: relative;
   background: radial-gradient(ellipse at 50% 0%, rgba(79,232,124,0.03) 0%, transparent 60%), var(--bg);
   display: flex; flex-direction: column; overflow: hidden;
 }
+
+/* Starfield — lifted from the original TV landing page. Sits above the
+   terminal background, below the content (content is z-index: 1). */
+.starfield {
+  position: absolute; inset: -20%; z-index: 0; pointer-events: none;
+  background-image:
+    radial-gradient(1.6px 1.6px at 40px 60px, #fff, transparent),
+    radial-gradient(1.2px 1.2px at 160px 120px, #fff, transparent),
+    radial-gradient(1.8px 1.8px at 260px 40px, #fff, transparent),
+    radial-gradient(1.2px 1.2px at 320px 200px, #fff, transparent),
+    radial-gradient(1.4px 1.4px at 90px 240px, #fff, transparent);
+  background-repeat: repeat; background-size: 340px 300px;
+  opacity: 0.35; animation: star-drift 140s linear infinite;
+}
+@keyframes star-drift {
+  from { transform: translate(0, 0); }
+  to { transform: translate(-340px, -300px); }
+}
+
+/* CRT overlay — scanlines + vignette over everything (popups included),
+   same recipe as riceaialignment.com but a touch lighter for dense tables.
+   Static: no animation, no repaints. */
+.crt {
+  position: fixed; inset: 0;
+  z-index: 950; pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(3, 6, 3, 0.15) 0px, rgba(3, 6, 3, 0.15) 1px,
+    transparent 1px, transparent 3px
+  );
+}
+.crt::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse 88% 82% at 50% 46%, transparent 60%, rgba(0, 0, 0, 0.25) 100%);
+}
+@media (max-width: 700px) { .crt { display: none; } }
 .term-titlebar {
   display: flex; align-items: center; gap: var(--sp-md);
   padding: var(--sp-xxs) var(--sp-md);
   border-bottom: var(--border-subtle);
   font-size: var(--fs-ui); color: var(--green); flex-shrink: 0; letter-spacing: .08em;
   text-shadow: var(--glow-strong);
+  position: relative; z-index: 1;
 }
 .tb-title  { flex: 1; }
 .tb-path    { color: var(--text-dim); text-shadow: none; margin-left: var(--sp-lg); letter-spacing: 0; }
@@ -673,6 +736,7 @@ body {
 .term-body {
   flex: 1; display: flex; flex-direction: column; overflow: hidden;
   padding: var(--sp-xs) var(--sp-md);
+  position: relative; z-index: 1;
 }
 .term-content {
   flex: 1; display: flex; gap: 10px; overflow-x: hidden; overflow-y: auto; flex-wrap: nowrap;
