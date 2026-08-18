@@ -7,7 +7,7 @@ import AmongUsBean from "./landing/AmongUsBean.vue";
 import StatTile from "./landing/StatTile.vue";
 import PlayerCard from "./landing/PlayerCard.vue";
 
-const { publicExperiments, loadPublicExperiments, servers, startServerWatch, stopServerWatch } = useFirestore();
+const { publicExperiments, publicLoading, loadPublicExperiments, servers, startServerWatch, stopServerWatch } = useFirestore();
 
 const cycleIndex = ref(0);
 let cycleTimer = null;
@@ -49,6 +49,11 @@ const groupStats = computed(() => groupWins(current.value, groups.value));
 const players = computed(() => sortedPlayers(current.value));
 const mvp = computed(() => players.value[0]?.name || "—");
 const totalGames = computed(() => current.value?.total_games || 0);
+const playersTitle = computed(() =>
+  current.value
+    ? "players · " + (current.value.studyName || current.value.studyId) + "/" + current.value.id
+    : "players · (loading)"
+);
 
 const recentGames = computed(() => {
   const g = current.value?.recent_games;
@@ -94,42 +99,58 @@ onUnmounted(() => {
 
 <template>
   <div class="landing">
-    <div class="about-wrap">
-      <TerminalCard title="about" :min-width="80" :collapsible="false">
+    <!-- The full layout renders immediately (before experiments load);
+         values fill in as the data arrives. -->
+    <!-- Left side column: about, lab cards, stat tiles, servers -->
+    <aside class="side-col">
+      <TerminalCard title="about" :min-width="40" :collapsible="false">
         <div class="about dim">
-          among-i is a multi-agent LLM simulation: agents with distinct personalities
-          play among us-style rounds — every move, chat, kill, and vote is decided by a
-          language model. this page shows live stats from finished experiments.
+          raia labs is the experimental division of <b>rice ai alignment</b> — a student
+          club at rice university. our members create, deploy, and analyze agentic
+          experiments: llm-driven agents with their own personas act in simulated
+          worlds, and every decision, conversation, and outcome is recorded.
         </div>
       </TerminalCard>
-    </div>
 
-    <!-- Empty state -->
-    <TerminalCard v-if="!current" title="live stats" :min-width="60" :collapsible="false">
-      <div class="empty-state">
-        <AmongUsBean color="#4fe87c" size="150px" />
-        <div class="empty-title g">[ waiting for the crew... ]</div>
-        <div class="dim">no games have finished yet — check back soon</div>
-      </div>
-    </TerminalCard>
+      <TerminalCard title="[01] create" :min-width="40" :collapsible="false">
+        <div class="about dim">
+          design experiments with a modular config system — agent personas, maps,
+          actions, phases, and win conditions — validated by a shared schema compiler.
+        </div>
+      </TerminalCard>
 
-    <template v-else>
-      <section class="tiles-row">
-        <StatTile icon="🎮" :value="totalGames" label="games played" accent="var(--blue)" />
-        <StatTile
-          v-for="g in groupStats"
-          :key="g.key"
-          :icon="g.cls === 'r' ? '🔴' : g.cls === 'g' ? '🟢' : '🏳️'"
-          :value="g.pct + '%'"
-          :label="g.label + ' win rate'"
-          :accent="accentFor(g.cls)"
-        />
-        <StatTile icon="🔪" :value="current.total_kills || 0" label="total kills" accent="var(--amber)" />
-        <StatTile icon="🚪" :value="current.total_ejections || 0" label="ejections" accent="var(--purple)" />
-        <StatTile icon="👑" :value="mvp" label="top player" accent="var(--yellow, var(--amber))" />
-      </section>
+      <TerminalCard title="[02] deploy" :min-width="40" :collapsible="false">
+        <div class="about dim">
+          queue jobs to the lab server fleet: workers claim trials, run games against
+          live llms, and stream a godot render view of the action.
+        </div>
+      </TerminalCard>
 
-      <TerminalCard title="servers" :min-width="80" :collapsible="false">
+      <TerminalCard title="[03] analyze" :min-width="40" :collapsible="false">
+        <div class="about dim">
+          every trial is logged — per-game stats, full context and decision traces,
+          and win rates per group — inspectable right here in the dashboard.
+        </div>
+      </TerminalCard>
+
+      <TerminalCard title="live stats" :min-width="40" :collapsible="false">
+        <div class="tiles-grid">
+          <StatTile icon="🎮" :value="totalGames" label="games played" accent="var(--blue)" />
+          <StatTile
+            v-for="g in groupStats"
+            :key="g.key"
+            :icon="g.cls === 'r' ? '🔴' : g.cls === 'g' ? '🟢' : '🏳️'"
+            :value="g.pct + '%'"
+            :label="g.label + ' win rate'"
+            :accent="accentFor(g.cls)"
+          />
+          <StatTile icon="🔪" :value="current?.total_kills || 0" label="total kills" accent="var(--amber)" />
+          <StatTile icon="🚪" :value="current?.total_ejections || 0" label="ejections" accent="var(--purple)" />
+          <StatTile icon="👑" :value="mvp" label="top player" accent="var(--yellow, var(--amber))" />
+        </div>
+      </TerminalCard>
+
+      <TerminalCard title="servers" :min-width="40" :collapsible="false">
         <div class="server-row">
           <div v-for="s in serverChips" :key="s.id" class="server-chip">
             <AmongUsBean :color="s.color" size="34px" />
@@ -143,69 +164,93 @@ onUnmounted(() => {
           <div v-if="!serverChips.length" class="dim no-servers">(no servers connected)</div>
         </div>
       </TerminalCard>
+    </aside>
 
-      <div class="players-outer">
-        <TerminalCard
-          :title="'players · ' + (current.studyName || current.studyId) + '/' + current.id"
-          :min-width="80"
-          :collapsible="false"
-        >
-          <div class="players-grid">
-            <PlayerCard
-              v-for="(p, i) in players"
-              :key="p.name + i"
-              :player="p"
-              :rank="i + 1"
-            />
-            <div class="no-players dim" v-if="!players.length">no players recorded yet</div>
-          </div>
-        </TerminalCard>
-      </div>
-
-      <footer class="ticker-wrap" v-if="recentGames.length">
-        <div class="ticker-label">recent</div>
-        <div class="ticker-viewport">
-          <div class="ticker-track">
-            <span class="ticker-item" :class="paletteCls(g.winner)" v-for="(g, i) in recentGames" :key="i">
-              {{ fmtWinner(g.winner, groups) }}&nbsp;&nbsp;🔪&nbsp;{{ g.kills || 0 }} kills&nbsp;&nbsp;🚪&nbsp;{{ g.ejections || 0 }} ejections
-            </span>
+    <!-- Main column: players fill the remaining space -->
+    <section class="main-col">
+      <TerminalCard
+        :title="playersTitle"
+        :min-width="60"
+        :collapsible="false"
+        class="players-card"
+      >
+        <div class="players-grid">
+          <PlayerCard
+            v-for="(p, i) in players"
+            :key="p.name + i"
+            :player="p"
+            :rank="i + 1"
+          />
+          <div class="no-players" v-if="!players.length">
+            <AmongUsBean color="#4fe87c" size="80px" />
+            <div class="empty-title g">{{ publicLoading ? "[ loading... ]" : "[ waiting for the crew... ]" }}</div>
+            <div class="dim">{{ publicLoading ? "fetching experiment stats" : "no games have finished yet — check back soon" }}</div>
           </div>
         </div>
-      </footer>
-    </template>
+      </TerminalCard>
+    </section>
+
+    <footer class="ticker-wrap" v-if="recentGames.length">
+      <div class="ticker-label">recent</div>
+      <div class="ticker-viewport">
+        <div class="ticker-track">
+          <span class="ticker-item" :class="paletteCls(g.winner)" v-for="(g, i) in recentGames" :key="i">
+            {{ fmtWinner(g.winner, groups) }}&nbsp;&nbsp;🔪&nbsp;{{ g.kills || 0 }} kills&nbsp;&nbsp;🚪&nbsp;{{ g.ejections || 0 }} ejections
+          </span>
+        </div>
+      </div>
+    </footer>
   </div>
 </template>
 
 <style scoped>
 .landing {
   flex: 1; min-height: 0;
-  display: flex; flex-direction: column; gap: var(--sp-md);
+  display: grid;
+  grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr);
+  grid-template-rows: 1fr auto;
+  gap: var(--sp-md);
   font-family: var(--font-mono);
 }
 
-/* ── About ───────────────────────────────────────────────── */
-.about-wrap { display: flex; justify-content: center; }
+/* The box-expand clip-path animation can stall mid-frame on this busy
+   page and leave cards visibly sliced — render landing cards instantly. */
+.landing :deep(.card-box) { animation: none; margin-bottom: 0; }
+
+/* Cards size themselves with an inline ch-width; make them fill their
+   grid cell instead so the two columns span the whole screen. */
+.side-col :deep(.card-box),
+.main-col :deep(.card-box) { width: 100% !important; }
+
+/* ── Loading / empty state (inside the players card) ─────── */
+.no-players {
+  grid-column: 1 / -1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--sp-sm); padding: var(--sp-lg) var(--sp-md);
+}
+.empty-title { font-size: var(--fs-md); font-weight: 700; }
+
+/* ── Left side column ────────────────────────────────────── */
+.side-col {
+  min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: var(--sp-md);
+  padding-right: 2px;
+}
+.side-col::-webkit-scrollbar { width: var(--scrollbar-w, 3px); }
+.side-col::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-sm); }
+.side-col::-webkit-scrollbar-track { background: transparent; }
+
 .about {
   font-size: var(--fs-base); line-height: var(--lh-loose);
   white-space: normal; word-break: normal;
 }
 
-/* The box-expand clip-path animation can stall mid-frame on this busy
-   page and leave cards visibly sliced — render landing cards instantly. */
-.landing :deep(.card-box) { animation: none; }
-
-/* ── Empty state ─────────────────────────────────────────── */
-.empty-state {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: var(--sp-sm); padding: var(--sp-md) 0;
+/* ── Tiles (grid inside the side column) ─────────────────── */
+.tiles-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-xs);
 }
-.empty-title { font-size: var(--fs-md); font-weight: 700; }
-
-/* ── Tiles ───────────────────────────────────────────────── */
-.tiles-row {
-  display: flex; gap: var(--sp-sm); justify-content: center; flex-wrap: wrap;
-  flex-shrink: 0;
-}
+.tiles-grid > * { min-width: 0; }
 
 /* ── Servers ─────────────────────────────────────────────── */
 .server-row {
@@ -221,18 +266,30 @@ onUnmounted(() => {
 .server-state { font-size: var(--fs-sm); }
 .no-servers { padding: var(--sp-xxs) var(--sp-sm); }
 
-/* ── Players ─────────────────────────────────────────────── */
-.players-outer { flex: 1; min-height: 0; overflow-y: auto; display: flex; }
-.players-outer > * { flex: 1; }
-.players-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 280px));
-  gap: var(--sp-sm); justify-content: center;
+/* ── Main column: players fill the remaining space ───────── */
+.main-col { min-height: 0; display: flex; }
+.main-col > * { flex: 1; min-width: 0; }
+.main-col :deep(.card-box) {
+  height: 100%; display: flex; flex-direction: column;
+  overflow-y: hidden;
 }
-.no-players { grid-column: 1 / -1; text-align: center; padding: var(--sp-md); }
+.main-col :deep(.box-body) {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex;
+}
+.main-col :deep(.box-body)::-webkit-scrollbar { width: var(--scrollbar-w, 3px); }
+.main-col :deep(.box-body)::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-sm); }
+.main-col :deep(.box-body)::-webkit-scrollbar-track { background: transparent; }
 
-/* ── Ticker — pinned to the bottom ───────────────────────── */
+.players-grid {
+  flex: 1; min-height: 0; align-content: start;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: var(--sp-sm);
+}
+
+/* ── Ticker — pinned to the bottom, spans both columns ───── */
 .ticker-wrap {
-  display: flex; align-items: center; flex-shrink: 0; margin-top: auto;
+  grid-column: 1 / -1;
+  display: flex; align-items: center; flex-shrink: 0;
   border-top: var(--border-hair); padding-top: var(--sp-xs); gap: var(--sp-sm);
 }
 .ticker-label {
@@ -247,4 +304,12 @@ onUnmounted(() => {
 }
 .ticker-item { padding: 0 var(--sp-lg); border-right: var(--border-hair); }
 @keyframes scroll-left { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* ── Narrow windows: single column stack ─────────────────── */
+@media (max-width: 900px) {
+  .landing { grid-template-columns: 1fr; }
+  .ticker-wrap { grid-column: 1; }
+  .side-col { overflow-y: visible; }
+  .main-col { min-height: 45vh; }
+}
 </style>
