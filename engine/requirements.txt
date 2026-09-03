@@ -5,3 +5,4 @@ pydantic
 firebase_admin
 pyngrok
 psutil
+pillow>=10.0.0  # sprite sheet generator (make_sprites.py)

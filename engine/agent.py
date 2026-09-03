@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, ConfigDict, create_model
 
 dotenv.load_dotenv()
 
-MODEL = os.getenv("MODEL", "google/gemini-2.5-flash").strip()
+MODEL = os.getenv("MODEL", "gpt-5.4-mini").strip()
 OPEN_ROUTER_API_KEY = os.getenv("OPEN_ROUTER_API_KEY", "")
 TOKEN_LIMIT = int(os.getenv("TOKEN_LIMIT", "100000"))
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))

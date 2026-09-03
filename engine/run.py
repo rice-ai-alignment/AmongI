@@ -6,6 +6,9 @@ Usage:
     python run.py --config experiment.json --render     # with Godot
     python run.py --config experiment.json --firebase   # push to Firestore
     python run.py --config-firestore --study S --exp E --firebase  # config from Firestore
+    python run.py --list-examples                      # list example configs
+    python run.py --example                            # interactive example picker
+    python run.py --example among_us/example_basic     # pick by path (or index)
 """
 
 from __future__ import annotations
@@ -18,6 +21,66 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bridge_server import LogStore, init_firestore, check_study_experiment
+
+
+# ── Example config picker ────────────────────────────────────────────────
+# Examples live in engine/examples/ (single source of truth — the
+# dashboard syncs them into public/sample_data/ at build time).
+
+def list_examples(base_dir: str) -> list[str]:
+    """All example configs under base_dir as relative paths, sorted."""
+    out = []
+    for root, _dirs, files in os.walk(base_dir):
+        for f in sorted(files):
+            if f.endswith(".json"):
+                out.append(os.path.relpath(os.path.join(root, f), base_dir))
+    return out
+
+
+def resolve_example(base_dir: str, name: str, examples: list[str]):
+    """Resolve --example NAME to a relative path, or None.
+
+    NAME may be an empty string (interactive picker), a 1-based index,
+    a relative path, or a (unique) bare filename.
+    """
+    if name == "":
+        print("[run] example configs:")
+        for i, p in enumerate(examples, 1):
+            print(f"  {i:>3}) {p}")
+        raw = input("pick an example (number or path): ").strip()
+        if not raw:
+            print("[run] cancelled.")
+            return None
+        name = raw
+
+    if name.isdigit():
+        idx = int(name) - 1
+        if 0 <= idx < len(examples):
+            return examples[idx]
+        print(f"[run] no example #{name} (1-{len(examples)})")
+        return None
+
+    # Normalize: names may be given with or without the .json extension.
+    key = name if name.endswith(".json") else name + ".json"
+    stem = os.path.splitext(name)[0]
+
+    # Exact relative path, then path suffix, then unique bare filename
+    exact = [p for p in examples if p == key]
+    if len(exact) == 1:
+        return exact[0]
+    suff = [p for p in examples if p.endswith("/" + key) or p.endswith("/" + name)]
+    if len(suff) == 1:
+        return suff[0]
+    base_matches = [p for p in examples
+                    if os.path.splitext(os.path.basename(p))[0] == stem]
+    if len(base_matches) == 1:
+        return base_matches[0]
+    matches = exact or suff or base_matches
+    if matches:
+        print(f"[run] ambiguous example '{name}' — matches: {', '.join(matches)}")
+    else:
+        print(f"[run] no example matches '{name}' — try --list-examples")
+    return None
 
 
 async def _tail_loop(store: LogStore, interval: float):
@@ -36,6 +99,11 @@ async def main():
     parser.add_argument("--config", default=None, help="Path to experiment JSON config")
     parser.add_argument("--config-firestore", action="store_true",
                         help="Load experiment config from Firestore (requires --study --experiment)")
+    parser.add_argument("--example", nargs="?", const="", default=None, metavar="NAME",
+                        help="Pick an example config from engine/examples/ "
+                             "(NAME = path, index, or empty for an interactive picker)")
+    parser.add_argument("--list-examples", action="store_true",
+                        help="List example configs in engine/examples/ and exit")
     parser.add_argument("--map", default=None, help="Path to map JSON (overrides config)")
     parser.add_argument("--log-dir", default="../log")
     parser.add_argument("--firebase", action="store_true",
@@ -54,6 +122,24 @@ async def main():
 
     base = os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.abspath(os.path.join(base, args.log_dir))
+
+    # ── Example picker ───────────────────────────────────────────────────
+    examples_dir = os.path.join(base, "examples")
+    examples = list_examples(examples_dir)
+    if args.list_examples:
+        print("[run] example configs:")
+        for i, p in enumerate(examples, 1):
+            print(f"  {i:>3}) {p}")
+        return
+    if args.example is not None:
+        if args.config or args.config_firestore:
+            print("[run] --example cannot be combined with --config/--config-firestore")
+            return
+        picked = resolve_example(examples_dir, args.example, examples)
+        if not picked:
+            return
+        args.config = os.path.join(examples_dir, picked)
+        print(f"[run] Using example: {picked}")
 
     # ── Bridge (log tailer → Firestore) ──────────────────────────────────
     store = LogStore(log_dir)

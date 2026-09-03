@@ -9,3 +9,10 @@ __pycache__/
 firebase-key.json
 .venv
 *.log
+
+dist/
+
+# Real Firebase web config — only the .example.js is committed
+dashboard/firebase-config.js
+dashboard/public/firebase-config.js
+dashboard/dist/firebase-config.js

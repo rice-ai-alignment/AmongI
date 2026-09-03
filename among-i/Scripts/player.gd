@@ -4,16 +4,22 @@ extends CharacterBody2D
 var speed = 200
 
 @onready var speech_bubble = get_node("SpeechBubble")
+@onready var name_label = get_node("NameLabel")
 
 var action_label: Label  # recent-actions list above the head
 
 @export var tile_map: TileMapLayer  # Drag your TileMapLayer here in the Inspector
-@export var move_speed: float = .8 # Time in seconds to move one tile
+@export var move_speed: float = 1.5 # Time in seconds to move one tile
 
 var is_moving: bool = false
 var is_dead: bool = false
 var walk_tween: Tween = null
 var frame_tween: Tween = null
+var idle_tween: Tween = null
+
+# Server sets these at spawn:
+var spread_index: int = 0     # per-agent visual offset so they never overlap
+var is_imposter: bool = false # imposter chats render red
 
 const NO_PENDING := Vector2i(-99999, -99999)
 var pending_tile: Vector2i = NO_PENDING  # queued move target while mid-tween
@@ -28,8 +34,38 @@ var pending_tile: Vector2i = NO_PENDING  # queued move target while mid-tween
 @export var idle_row: int = 0        # The Y-coordinate in your SpriteSheet for idle
 @export var frame_count: int = 4     # How many frames are in your walking animation loop
 
+# The generated sheet (make_sprites.py) stacks one 3-row band per color,
+# in AGENT_COLORS order (0 idle · 1 walk · 2 dead). Server.gd sets
+# color_band at spawn.
+const ROWS_PER_COLOR := 3
+var color_band: int = 0
+
+func _row(base: int) -> int:
+	return color_band * ROWS_PER_COLOR + base
+
+func _start_idle_anim() -> void:
+	"""Cycle the 4 idle columns slowly (breathing) while standing still."""
+	if is_dead or is_moving:
+		return
+	if idle_tween != null and idle_tween.is_valid():
+		idle_tween.kill()
+	var sprite = get_node("Sprite2D")
+	idle_tween = create_tween()
+	idle_tween.set_loops()  # infinite
+	idle_tween.tween_property(sprite, "frame_coords:x", frame_count - 1, 1.2)\
+		.from(0)
+
+# Per-agent spread: agents on the same tile nudge apart by their index
+# so sprites never perfectly overlap.
+const SPREAD_OFFSETS: Array[Vector2] = [
+	Vector2(0, 0), Vector2(26, 22), Vector2(-26, 22), Vector2(26, -22), Vector2(-26, -22),
+	Vector2(0, 34), Vector2(0, -34), Vector2(38, 0), Vector2(-38, 0), Vector2(18, 18),
+]
+
 func get_tile_position(target_tile_coords: Vector2i):
-	return tile_map.map_to_local(target_tile_coords) + Vector2(100, -80)
+	return tile_map.map_to_local(target_tile_coords) \
+		+ Vector2(0, -80) \
+		+ SPREAD_OFFSETS[spread_index % SPREAD_OFFSETS.size()]
 
 func set_tile_position(target_tile_coords: Vector2i):
 	pending_tile = NO_PENDING
@@ -45,10 +81,12 @@ func set_dead():
 		frame_tween.kill()
 	if walk_tween != null and walk_tween.is_valid():
 		walk_tween.kill()
+	if idle_tween != null and idle_tween.is_valid():
+		idle_tween.kill()
 	is_moving = false
 	var sprite = get_node("Sprite2D")
 	sprite.modulate = Color(0.22, 0.22, 0.28)
-	sprite.frame_coords.y = 5   # dead body row in the spritesheet
+	sprite.frame_coords.y = _row(2)   # dead body row in the spritesheet
 	sprite.frame_coords.x = 0
 
 func set_alive():
@@ -56,8 +94,9 @@ func set_alive():
 	is_dead = false
 	var sprite = get_node("Sprite2D")
 	sprite.modulate = Color(1, 1, 1)
-	sprite.frame_coords.y = idle_row
+	sprite.frame_coords.y = _row(idle_row)
 	sprite.frame_coords.x = 0
+	_start_idle_anim()
 
 func move_to_tile(target_tile_coords: Vector2i):
 	if is_dead:
@@ -67,6 +106,10 @@ func move_to_tile(target_tile_coords: Vector2i):
 		if target_tile_coords != tile:
 			pending_tile = target_tile_coords
 		return false
+
+	# Walking replaces the idle animation
+	if idle_tween != null and idle_tween.is_valid():
+		idle_tween.kill()
 
 	tile = target_tile_coords
 	var sprite = get_node("Sprite2D")
@@ -90,23 +133,27 @@ func move_to_tile(target_tile_coords: Vector2i):
 
 	# B. The Frame Animation
 	# We animate the 'x' of frame_coords from 0 to the last frame
-	sprite.frame_coords.y = walk_row # Switch to the walking row
+	sprite.frame_coords.y = _row(walk_row) # Switch to the walking row
 	frame_tween = create_tween()
-	frame_tween.set_loops(2) # Repeat the walk cycle twice during the slow move
+	frame_tween.set_loops() # loop the walk cycle until the move finishes
 	frame_tween.set_trans(Tween.TRANS_LINEAR)
-	frame_tween.tween_property(sprite, "frame_coords:y", frame_count - 1, move_speed / 2.0)\
+	frame_tween.tween_property(sprite, "frame_coords:x", frame_count - 1, move_speed / 4.0)\
 		.from(0) # Start at frame 0
 
-	# 3. Reset to Idle when done
-	frame_tween.finished.connect(func():
+	# 3. Reset to Idle when the MOVE finishes (the frame tween loops on)
+	walk_tween.finished.connect(func():
+		if frame_tween != null and frame_tween.is_valid():
+			frame_tween.kill()
 		is_moving = false
-		sprite.frame_coords.y = idle_row
-		#sprite.frame_coords.x = 0
+		sprite.frame_coords.y = _row(idle_row)
+		sprite.frame_coords.x = 0
 		# Apply any move that was queued while the tween ran
 		if pending_tile != NO_PENDING:
 			var next_tile = pending_tile
 			pending_tile = NO_PENDING
 			move_to_tile(next_tile)
+		else:
+			_start_idle_anim()
 	)
 
 	return true
@@ -125,14 +172,33 @@ func show_message(text: String):
 	speech_bubble.visible = true
 
 func _ready():
-	# Snap to the nearest tile center immediately
+	# Snap to the nearest tile center immediately (with the per-agent
+	# spread offset so overlapping agents separate right away)
 	var current_tile = tile_map.local_to_map(global_position)
-	global_position = tile_map.map_to_local(current_tile)
+	global_position = get_tile_position(current_tile)
 
-	# Start on the idle frame explicitly (row 0, frame 0)
+	# Start on the idle frame explicitly (row 0, frame 0) and begin the
+	# breathing animation
 	var sprite = get_node("Sprite2D")
-	sprite.frame_coords.y = idle_row
+	sprite.frame_coords.y = _row(idle_row)
 	sprite.frame_coords.x = 0
+	_start_idle_anim()
+
+	# Imposters get red chat bubbles so their messages stand out
+	if is_imposter and speech_bubble != null:
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color(0.45, 0.10, 0.10, 0.96)
+		style.border_color = Color(0.75, 0.15, 0.15, 1)
+		style.set_border_width_all(1)
+		style.set_corner_radius_all(6)
+		style.content_margin_left = 8.0
+		style.content_margin_top = 5.0
+		style.content_margin_right = 8.0
+		style.content_margin_bottom = 5.0
+		speech_bubble.add_theme_stylebox_override("panel", style)
+		var lbl = speech_bubble.get_child(0)
+		if lbl is Label:
+			lbl.add_theme_color_override("font_color", Color(1, 0.85, 0.85))
 
 	# Recent-actions label above the head (created in code — no scene edits)
 	action_label = Label.new()
@@ -152,7 +218,25 @@ func set_recent_actions(lines: Array) -> void:
 		return
 	action_label.text = "\n".join(lines)
 
+func set_actions_visible(v: bool) -> void:
+	"""Show/hide the recent-actions debug text ([H] in the renderer)."""
+	if action_label != null:
+		action_label.visible = v
+
 func _process(_delta):
+	# Keep text UI at constant screen size regardless of camera zoom:
+	# counter-scale the bubble, name, and action labels by 1/zoom.
+	var cam := get_viewport().get_camera_2d()
+	var s := 1.0
+	if cam != null:
+		s = 1.0 / maxf(cam.zoom.x, 0.05)
+	if speech_bubble != null:
+		speech_bubble.scale = Vector2(s, s)
+	if name_label != null:
+		name_label.scale = Vector2(s, s)
+	if action_label != null:
+		action_label.scale = Vector2(s, s)
+
 	if speech_bubble != null and speech_bubble.visible:
 		# Center the bubble horizontally and keep it above the sprite
 		speech_bubble.position.x = -speech_bubble.size.x / 2.0

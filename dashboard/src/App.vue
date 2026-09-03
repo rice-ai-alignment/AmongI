@@ -91,7 +91,7 @@ async function loadConfig() {
       configJson.value = fromDB;
       configFromDb.value = true;
     } else {
-      const res = await fetch("/sample_data/example_basic.json");
+      const res = await fetch("/sample_data/among_us/example_basic.json");
       if (res.ok) configJson.value = await res.json();
       configFromDb.value = false;
     }
@@ -206,9 +206,9 @@ async function openResetPopup() {
   showResetPopup.value = true;
   if (resetExamples.value.length) return;
   const files = [
-    { name: "basic (crew + imposter, 5 trials)", file: "/sample_data/example_basic.json" },
-    { name: "small kill (fast kills)", file: "/sample_data/example_small_kill.json" },
-    { name: "timer (short rounds)", file: "/sample_data/example_timer.json" },
+    { name: "basic (crew + imposter, 5 trials)", file: "/sample_data/among_us/example_basic.json" },
+    { name: "small kill (fast kills)", file: "/sample_data/among_us/example_small_kill.json" },
+    { name: "timer (short rounds)", file: "/sample_data/among_us/example_timer.json" },
   ];
   const loaded = [];
   for (const f of files) {

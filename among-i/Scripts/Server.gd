@@ -42,6 +42,8 @@ const AGENT_COLORS = [
 
 var camera_mode: String = "auto"   # "auto" | "free"
 var _cam_label: Label
+var _state_label: Label = null      # top-center game state (STARTING/PLAYING/VOTING/ENDED)
+var _show_actions: bool = true      # [H] toggles per-agent recent-actions text
 
 var _camera_padding: float = 500.0
 var _camera_min_zoom: float = 0.05
@@ -65,6 +67,16 @@ var silent: bool = false         # suppress debug prints during fast-forward
 const MAX_RECENT_ACTIONS := 3
 var _recent_actions: Dictionary = {}   # agent_id -> Array[String]
 
+# ── Voting screen (live board: who voted for what) ────────────────────────
+
+var _voting_layer: CanvasLayer = null
+var _voting_panel: PanelContainer = null
+var _voting_rows_vbox: VBoxContainer = null
+var _voting_countdown: Label = null
+var _voting_result_lbl: Label = null
+var _voting_rows: Dictionary = {}      # agent_id -> {"vote": Label}
+var _voting_deadline_ms: int = 0       # Time.get_ticks_msec() deadline
+
 # ── Initialization ───────────────────────────────────────────────────────
 
 func _ready():
@@ -81,11 +93,148 @@ func _ready():
 	cam_layer.add_child(_cam_label)
 	_update_camera_label()
 
+	# Voting board HUD
+	_build_voting_screen()
+
+	# Top-center game state label
+	_state_label = Label.new()
+	_state_label.name = "GameStateLabel"
+	_state_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_state_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_state_label.position = Vector2(0, 12)
+	_state_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_state_label.add_theme_font_size_override("font_size", 22)
+	_state_label.add_theme_color_override("font_color", Color(0.31, 0.91, 0.49))
+	_state_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+	_state_label.add_theme_constant_override("outline_size", 6)
+	cam_layer.add_child(_state_label)
+	_set_game_state("WAITING FOR GAME…", Color(0.62, 0.72, 0.62))
+
 	# If PlaybackController loaded a file (child _ready runs first), skip listening
 	if has_node("PlaybackController") and $PlaybackController.is_file_mode():
 		print("[Renderer] File replay mode — skipping WebSocket listen")
 		return
 	start_listening()
+
+
+# ── Voting screen ─────────────────────────────────────────────────────────
+
+func _build_voting_screen():
+	_voting_layer = CanvasLayer.new()
+	_voting_layer.name = "VotingScreenLayer"
+	_voting_layer.layer = 5
+	_voting_layer.visible = false
+	add_child(_voting_layer)
+
+	_voting_panel = PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.08, 0.05, 0.94)
+	style.border_color = Color(0.31, 0.91, 0.49, 0.55)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(6)
+	style.content_margin_left = 22.0
+	style.content_margin_right = 22.0
+	style.content_margin_top = 14.0
+	style.content_margin_bottom = 14.0
+	_voting_panel.add_theme_stylebox_override("panel", style)
+	_voting_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_voting_panel.position = Vector2(0, 110)
+	_voting_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_voting_layer.add_child(_voting_panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	_voting_panel.add_child(vb)
+
+	var title := Label.new()
+	title.text = "══ EMERGENCY MEETING — VOTING ══"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 24)
+	title.add_theme_color_override("font_color", Color(0.31, 0.91, 0.49))
+	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+	title.add_theme_constant_override("outline_size", 6)
+	vb.add_child(title)
+
+	_voting_countdown = Label.new()
+	_voting_countdown.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_voting_countdown.add_theme_font_size_override("font_size", 16)
+	_voting_countdown.add_theme_color_override("font_color", Color(0.62, 0.72, 0.62))
+	vb.add_child(_voting_countdown)
+
+	_voting_rows_vbox = VBoxContainer.new()
+	_voting_rows_vbox.add_theme_constant_override("separation", 4)
+	vb.add_child(_voting_rows_vbox)
+
+	_voting_result_lbl = Label.new()
+	_voting_result_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_voting_result_lbl.add_theme_font_size_override("font_size", 18)
+	_voting_result_lbl.add_theme_color_override("font_color", Color(0.9, 0.62, 0.33))
+	_voting_result_lbl.visible = false
+	vb.add_child(_voting_result_lbl)
+
+
+func _voting_show(ids: Array, timeout: float):
+	for row in _voting_rows.values():
+		row["row"].queue_free()
+	_voting_rows.clear()
+	for aid_v in ids:
+		var aid := int(aid_v)
+		var hb := HBoxContainer.new()
+		hb.add_theme_constant_override("separation", 8)
+		var dot := Label.new()
+		dot.text = "●"
+		var color_idx: int = _player_colors.get(aid, 0)
+		dot.add_theme_color_override("font_color",
+			Color(AGENT_COLORS[color_idx % AGENT_COLORS.size()]))
+		dot.add_theme_font_size_override("font_size", 14)
+		var name_lbl := Label.new()
+		name_lbl.text = str(_player_names.get(aid, "?"))
+		name_lbl.custom_minimum_size.x = 150
+		name_lbl.add_theme_font_size_override("font_size", 16)
+		name_lbl.add_theme_color_override("font_color", Color(0.93, 0.96, 0.93))
+		var arrow := Label.new()
+		arrow.text = "→"
+		arrow.add_theme_color_override("font_color", Color(0.62, 0.72, 0.62))
+		var vote_lbl := Label.new()
+		vote_lbl.text = "…"
+		vote_lbl.add_theme_font_size_override("font_size", 16)
+		vote_lbl.add_theme_color_override("font_color", Color(0.31, 0.91, 0.49))
+		hb.add_child(dot)
+		hb.add_child(name_lbl)
+		hb.add_child(arrow)
+		hb.add_child(vote_lbl)
+		_voting_rows_vbox.add_child(hb)
+		_voting_rows[aid] = {"vote": vote_lbl, "row": hb}
+	_voting_deadline_ms = Time.get_ticks_msec() + int(timeout * 1000.0)
+	_voting_result_lbl.visible = false
+	_voting_layer.visible = true
+
+
+func _voting_set_vote(voter: String, choice: String):
+	for aid in _voting_rows:
+		if str(_player_names.get(aid, "")) == voter:
+			_voting_rows[aid]["vote"].text = choice
+			return
+
+
+func _voting_show_result(tally_str: String, ejected: String):
+	if _voting_layer == null:
+		return
+	_voting_result_lbl.text = "result: " + tally_str \
+		+ (" — ejected: " + ejected if ejected != "" else "")
+	_voting_result_lbl.visible = true
+
+
+func _voting_hide():
+	if _voting_layer != null:
+		_voting_layer.visible = false
+
+
+func _set_game_state(text: String, color: Color):
+	if _state_label == null:
+		return
+	_state_label.text = text
+	_state_label.add_theme_color_override("font_color", color)
 
 
 func start_listening():
@@ -147,6 +296,11 @@ func _process(delta):
 	_accept_connection()
 	_poll_render_peer()
 
+	# Voting countdown tick
+	if _voting_layer != null and _voting_layer.visible and _voting_countdown != null:
+		var left := maxi(0, int(ceil((_voting_deadline_ms - Time.get_ticks_msec()) / 1000.0)))
+		_voting_countdown.text = "votes in: " + str(left) + "s"
+
 	if camera_mode == "free":
 		_update_freecam(delta)
 	else:
@@ -156,8 +310,9 @@ func _process(delta):
 # ── Camera input / freecam ──────────────────────────────────────────────
 
 func _update_camera_label():
-	_cam_label.text = "CAM: free — WASD move · wheel zoom · [F] auto" if camera_mode == "free" \
+	var base: String = "CAM: free — WASD move · wheel zoom · [F] auto" if camera_mode == "free" \
 		else "CAM: auto — [F] freecam"
+	_cam_label.text = base + (" · [H] actions on" if _show_actions else " · [H] actions off")
 
 
 func _unhandled_input(event: InputEvent):
@@ -165,6 +320,15 @@ func _unhandled_input(event: InputEvent):
 		if event.keycode == KEY_F:
 			camera_mode = "free" if camera_mode == "auto" else "auto"
 			print("[Renderer] Camera mode: ", camera_mode)
+			_update_camera_label()
+			return
+		if event.keycode == KEY_H:
+			# Toggle the per-agent recent-actions debug text
+			_show_actions = not _show_actions
+			for p in _players.values():
+				if is_instance_valid(p):
+					p.set_actions_visible(_show_actions)
+			print("[Renderer] Recent-actions text: ", "on" if _show_actions else "off")
 			_update_camera_label()
 			return
 
@@ -344,6 +508,7 @@ func _handle_event(event: Dictionary):
 
 func _ev_game_start(ev: Dictionary):
 	_clear_all_players()
+	_voting_hide()
 	_game_active = true
 
 	for pdata in ev.get("players", []):
@@ -352,11 +517,13 @@ func _ev_game_start(ev: Dictionary):
 			pdata.get("name", "?"),
 			Vector2i(pdata.get("tile", [0, 0])[0],
 					 pdata.get("tile", [0, 0])[1]),
-			pdata.get("color_index", 0)
+			pdata.get("color_index", 0),
+			pdata.get("agent_type", "")
 		)
 	# Already done by the chage state thing
 	var gid = ev.get("game_id", "?")
 	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game started! (" + str(gid) + ")", ev.get("elapsed_ms", -1.0))
+	_set_game_state("PLAYING", Color(0.31, 0.91, 0.49))
 
 func _ev_game_end(ev: Dictionary):
 	_game_active = false
@@ -364,6 +531,8 @@ func _ev_game_end(ev: Dictionary):
 	var recap = ev.get("recap", {})
 	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game Over! " + str(winner) + " win!", ev.get("elapsed_ms", -1.0))
 	print("[Renderer] Game ended — winner: ", winner, " recap: ", recap)
+	_set_game_state("ENDED — " + str(winner).to_upper() + " WIN!", Color(0.95, 0.55, 0.55))
+	_voting_hide()
 
 func _ev_phase_change(ev: Dictionary):
 	var phase = ev.get("phase", "?")
@@ -371,10 +540,15 @@ func _ev_phase_change(ev: Dictionary):
 	match phase:
 		"starting":
 			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Game starting in " + str(int(countdown)) + "s...", ev.get("elapsed_ms", -1.0))
+			_set_game_state("STARTING — " + str(int(countdown)) + "s", Color(0.9, 0.62, 0.33))
+			_voting_hide()
 		"voting":
 			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: ══════ VOTING PHASE (" + str(int(countdown)) + "s) ══════", ev.get("elapsed_ms", -1.0))
+			_set_game_state("VOTING — " + str(int(countdown)) + "s", Color(0.9, 0.62, 0.33))
 		"playing":
 			chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Playing!", ev.get("elapsed_ms", -1.0))
+			_set_game_state("PLAYING", Color(0.31, 0.91, 0.49))
+			_voting_hide()
 
 func _ev_map_data(ev: Dictionary):
 	var w = ev.get("width", 0)
@@ -438,7 +612,8 @@ func _ev_spawn_player(ev: Dictionary):
 	var color_idx = ev.get("color_index", 0)
 	_spawn_player_node(aid, name, tile, color_idx)
 
-func _spawn_player_node(aid: int, pname: String, tile: Vector2i, color_idx: int):
+func _spawn_player_node(aid: int, pname: String, tile: Vector2i, color_idx: int,
+						agent_type: String = ""):
 	# Remove existing node if re-spawning
 	if aid in _players and is_instance_valid(_players[aid]):
 		_players[aid].queue_free()
@@ -446,12 +621,18 @@ func _spawn_player_node(aid: int, pname: String, tile: Vector2i, color_idx: int)
 	var player = player_scene.instantiate()
 	player.name = "Agent_%d" % aid
 	player.tile_map = tile_map
+
+	# Everything below must be set BEFORE the node enters the tree so
+	# _ready() can use it (color band, spread offset, imposter styling).
+	var band = color_idx % AGENT_COLORS.size()
+	player.color_band = band
+	player.spread_index = aid
+	player.is_imposter = agent_type.to_lower() in ["imposter", "impostor"]
+	player.get_node("Sprite2D").modulate = Color(1, 1, 1, 1)
+
 	add_child(player)
 	player.set_tile_position(tile)
-
-	# Set sprite color
-	var color_str = AGENT_COLORS[color_idx % AGENT_COLORS.size()]
-	player.get_node("Sprite2D").modulate = Color(color_str)
+	player.set_actions_visible(_show_actions)
 
 	# Set name label
 	var name_label = player.get_node("NameLabel")
@@ -637,8 +818,13 @@ func _ev_actions(ev: Dictionary):
 
 func _ev_vote_cast(ev: Dictionary):
 	"""Handle a vote_cast event (may contain combined actions from log format)."""
-	# The log format nests vote+chat in an actions array.
+	# Update the voting board for every vote action in the event
 	var actions: Array = ev.get("actions", [])
+	for act in actions:
+		if act is Dictionary and act.get("type", "") == "vote":
+			_voting_set_vote(
+				str(act.get("voter", ev.get("voter", ""))),
+				str(act.get("voted_for", act.get("target", "?"))))
 	if actions.size() > 0:
 		_ev_actions(ev)
 		return
@@ -659,9 +845,11 @@ func _ev_voting_start(ev: Dictionary):
 	var timeout = ev.get("timeout", 30)
 	var names = []
 	for aid in players:
-		names.append(_player_names.get(aid, "?"))
+		names.append(_player_names.get(int(aid), "?"))
 	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Emergency meeting! " + str(names.size()) + " players voting (" + str(timeout) + "s)", ev.get("elapsed_ms", -1.0))
 	print("[Renderer] Voting started — players: ", ", ".join(names))
+	_set_game_state("VOTING — " + str(int(timeout)) + "s", Color(0.9, 0.62, 0.33))
+	_voting_show(players, timeout)
 
 func _ev_voting_result(ev: Dictionary):
 	var tallies = ev.get("tallies", null)
@@ -689,6 +877,7 @@ func _ev_voting_result(ev: Dictionary):
 		_players[aid].visible = false
 
 	chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: Votes: " + tally_str, ev.get("elapsed_ms", -1.0))
+	_voting_show_result(tally_str, str(ejected))
 	if ejected != "":
 		var imp_label = " (was imposter!)" if was_imposter else ""
 		chat_box.add_message("[b][color=#FFFFFF]SYSTEM[/color][/b]: " + str(ejected) + " was ejected!" + imp_label, ev.get("elapsed_ms", -1.0))

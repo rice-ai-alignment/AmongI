@@ -12,7 +12,7 @@
         "type": "AgentType", "class": "AgentType",
         "id": "Crewmate", "displayName": "Crewmate",
         "prompt": "You are a crewmate. Complete tasks, observe others, and report dead bodies.",
-        "count": 4
+        "count": 3
       },
       {
         "type": "AgentType", "class": "AgentType",
@@ -35,9 +35,9 @@
   "phases": [
     {
       "type": "GamePhase", "class": "PlayPhase",
-      "timeout": 600, "tick_interval": 3,
+      "timeout": 60, "tick_interval": 3,
       "position_mode": {"type": "Position", "class": "TilePosition",
-        "map": {"type": "Map", "class": "SquareMap", "size": 16}},
+        "map": {"type": "Map", "class": "SquareMap", "size": 8}},
       "actions": [
         {"type": "AgentAction", "class": "MoveAction", "range": 2, "available_to": ["Crewmate", "Imposter"]},
         {"type": "AgentAction", "class": "ChatAction", "available_to": ["Crewmate", "Imposter"]},

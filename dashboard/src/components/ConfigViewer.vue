@@ -18,9 +18,9 @@ onMounted(async () => {
   try {
     const [schemaRes, basicRes, smallRes, timerRes] = await Promise.all([
       fetch("/schema.json"),
-      fetch("/sample_data/example_basic.json"),
-      fetch("/sample_data/example_small_kill.json"),
-      fetch("/sample_data/example_timer.json"),
+      fetch("/sample_data/among_us/example_basic.json"),
+      fetch("/sample_data/among_us/example_small_kill.json"),
+      fetch("/sample_data/among_us/example_timer.json"),
     ]);
     schema.value = await schemaRes.json();
 

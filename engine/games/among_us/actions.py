@@ -106,8 +106,11 @@ class ReportBodyAction(TargetedAction):
         if not body:
             return None
 
-        # Remove the body (it's been reported)
-        engine.dead_bodies.remove(body)
+        # Remove the body (it's been reported). Purge EVERY entry with
+        # this name — a body may only ever be reported once, even if a
+        # stale duplicate from a previous game slipped in.
+        engine.dead_bodies = [b for b in engine.dead_bodies
+                              if b["name"] != target_name]
 
         # Notify all players
         for p in engine._get_active_players():

@@ -1,0 +1,111 @@
+{
+ "type": "Game",
+ "class": "AmongUsGame",
+ "agents": {
+  "type": "AgentConfig",
+  "class": "AgentConfig",
+  "types": [
+   {
+    "type": "AgentType",
+    "class": "AgentType",
+    "id": "crewmate",
+    "count": 3,
+    "prompt": "You are a crewmate. Complete tasks and watch for suspicious behavior.",
+    "model": "gpt-5.4-mini",
+    "context_manager": {
+     "type": "ContextManager",
+     "class": "ContextManager",
+     "base_prompt": "You are a crewmate aboard a spaceship. Work together."
+    }
+   },
+   {
+    "type": "AgentType",
+    "class": "AgentType",
+    "id": "imposter",
+    "count": 1,
+    "prompt": "You are an imposter. Eliminate crewmates without getting caught.",
+    "model": "gpt-5.4-mini",
+    "context_manager": {
+     "type": "ContextManager",
+     "class": "ContextManager",
+     "base_prompt": "You are an imposter. Kill crewmates without being discovered."
+    }
+   }
+  ]
+ },
+ "phases": [
+  {
+   "type": "GamePhase",
+   "class": "PlayPhase",
+   "timeout": 600,
+   "tick_interval": 3,
+   "position_mode": {
+    "type": "Position",
+    "class": "TilePosition",
+    "map": {
+     "type": "Map",
+     "class": "SquareMap",
+     "size": 5
+    }
+   },
+   "actions": [
+    {
+     "type": "TargetedAction",
+     "class": "KillAction",
+     "range": 3,
+     "prompt": "Choose a target to kill within range.",
+     "available_to": [
+      "imposter"
+     ]
+    },
+    {
+     "type": "TargetedAction",
+     "class": "ReportBodyAction",
+     "range": 5,
+     "prompt": "Report a dead body you found.",
+     "available_to": [
+      "crewmate",
+      "imposter"
+     ]
+    }
+   ]
+  },
+  {
+   "type": "GamePhase",
+   "class": "VotingPhase",
+   "timeout": 30,
+   "min_time": 15,
+   "tick_interval": 3,
+   "actions": []
+  }
+ ],
+ "win_conditions": [
+  {
+   "type": "WinCondition",
+   "class": "WinCondition",
+   "id": "crewmate_win",
+   "winner": "crewmate",
+   "condition": {
+    "type": "Condition",
+    "class": "AgentCountCheck",
+    "agent_type": "imposter",
+    "op": "==",
+    "count": 0
+   }
+  },
+  {
+   "type": "WinCondition",
+   "class": "WinCondition",
+   "id": "imposter_win",
+   "winner": "imposter",
+   "condition": {
+    "type": "Condition",
+    "class": "AgentCountCheck",
+    "agent_type": "crewmate",
+    "op": "<=",
+    "count": 1
+   }
+  }
+ ],
+ "trial_count": 1
+}

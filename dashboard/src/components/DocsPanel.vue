@@ -10,6 +10,7 @@ const sections = [
   { key: "components", label: "component database" },
   { key: "jobs", label: "job system" },
   { key: "server", label: "server setup" },
+  { key: "local-run", label: "godot run" },
 ];
 </script>
 
@@ -208,6 +209,88 @@ const sections = [
               that are still in claimed/running state (server crash
               recovery). Jobs claimed by other servers are not touched
               unless they exceed a 30-minute timeout.
+            </div>
+          </div>
+        </TerminalCard>
+      </div>
+
+      <!-- Godot run -->
+      <div v-if="section === 'local-run'">
+        <TerminalCard title="godot run" :min-width="60" :collapsible="false">
+          <div class="docs-body">
+            <div class="g">▸ what this is</div>
+            <div class="dim">
+              Godot is a <b>pure renderer</b> — all game logic lives in the
+              engine. You can run an experiment locally with nothing but
+              the Godot project and an experiment config: the engine reads
+              the config, asks the LLM for decisions, and streams render
+              events to Godot over a websocket on port 8081. No Firestore,
+              no jobs, no dashboard needed.
+            </div>
+
+            <div class="g">▸ 1. run the godot renderer</div>
+            <div class="dim">
+              Open the <span class="a">among-i/</span> project in Godot and
+              press <b>F5</b> (or run the exported build). Server.gd
+              listens on port 8081 and renders whatever the engine sends —
+              spawns, movement, chat bubbles, kills, votes, game end.
+              Camera controls: <b>F</b> toggles auto-follow / freecam
+              (WASD pan, scroll zoom).<br />
+              The player sprite sheet
+              (<span class="a">among-i/sprites/beans.png</span>) is
+              generated from the dashboard's bean design by
+              <span class="a">python make_sprites.py</span> — regenerate
+              it after changing the palette or poses.
+            </div>
+
+            <div class="g">▸ 2. run the engine with a local config</div>
+            <div class="dim">
+              <span class="a">cd engine && python run.py --example</span>
+              — an interactive picker over the example configs in
+              <span class="a">engine/examples/</span> (sectioned into
+              folders). Pick directly with
+              <span class="a">--example among_us/example_basic</span>
+              (path or index), or list them with
+              <span class="a">--list-examples</span>. Any JSON config
+              works with <span class="a">--config path</span>.<br />
+              Flags: <span class="a">--render</span> (stream to Godot),
+              <span class="a">--max-games N</span>,
+              <span class="a">--map path</span> (override the map),
+              <span class="a">--render-host</span> /
+              <span class="a">--render-port 8081</span>,
+              <span class="a">--log-dir ../log</span>. Requires
+              <span class="a">OPEN_ROUTER_API_KEY</span> (and optionally
+              <span class="a">MODEL</span>) in a .env file at the repo
+              root or in engine/. The dashboard's sample configs are
+              synced from <span class="a">engine/examples/</span> at
+              build time — that's the single source of truth.
+            </div>
+
+            <div class="g">▸ 3. use the server's config (no dashboard needed)</div>
+            <div class="dim">
+              <span class="a">python run.py --config-firestore --study S
+              --experiment E --render</span><br />
+              Reads the exact experiment config the job servers use,
+              straight from Firestore — handy for reproducing a run
+              locally. Requires <span class="a">firebase-key.json</span>
+              in engine/.
+            </div>
+
+            <div class="g">▸ remote viewing (godot on one machine, engine on another)</div>
+            <div class="dim">
+              On the engine machine, start the relay instead of Godot:<br />
+              <span class="a">python render_relay.py --host 0.0.0.0
+              --port 8081</span><br />
+              then run the engine normally with
+              <span class="a">--render</span> — it connects to the relay
+              as a client, and the relay broadcasts to every viewer.<br />
+              On the viewer machine:
+              <span class="a">godot --path among-i -- --connect=ws://&lt;relay-host&gt;:8081</span><br />
+              (web build: open it with <span class="a">?connect=wss://…</span>
+              in the URL). Job servers can expose this for any running
+              job via <span class="a">--render</span> (see server setup),
+              then use <span class="g">[ expose render ]</span> on the
+              job popup.
             </div>
           </div>
         </TerminalCard>

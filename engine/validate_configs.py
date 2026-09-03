@@ -19,6 +19,7 @@ from pathlib import Path
 
 BASE = Path(__file__).parent
 DASHBOARD_PUBLIC = BASE.parent / "dashboard" / "public"
+EXAMPLES_DIR = BASE / "examples"
 SKIP = {"sample_games.json", "firebase-key.json", "map_data.json",
         "version.json", "experiment.json"}  # non-config / legacy
 
@@ -45,8 +46,9 @@ def main():
         configs = args
     else:
         configs = [str(p) for p in sorted(BASE.glob("*.json")) if p.name not in SKIP]
-        configs += [str(p) for p in sorted((BASE.parent / "dashboard/public/sample_data").glob("*.json"))
-                    if p.name not in SKIP]
+        # Example configs — engine/examples/ is the single source of truth
+        # (synced into dashboard/public/sample_data at build time).
+        configs += [str(p) for p in sorted(EXAMPLES_DIR.rglob("*.json"))]
 
     cmd = ["node", str(BASE / "validate.js"), "--schema", str(schema_path)] + configs
     result = subprocess.run(cmd)

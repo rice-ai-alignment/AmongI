@@ -37,6 +37,13 @@ class PlayPhase(GamePhase):
                     "from": {"x": old.x, "y": old.y},
                     "to": {"x": nx, "y": ny},
                 })
+            elif getattr(player, "ctx", None) is not None:
+                # Tell the agent its move was rejected so it can retry
+                # or pick another direction next turn.
+                player.ctx.set_temporary(
+                    "move_feedback",
+                    f"Your move to ({nx}, {ny}) was blocked — that tile "
+                    f"is not walkable. You did not move this turn.")
 
         # ── Actions (attack, report, etc.) ──
         # Two action families share this list with different execute()

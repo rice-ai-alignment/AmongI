@@ -59,7 +59,7 @@ class GameConfig:
     game_max_length: float = 600.0
     vote_timeout: float = 30.0
     min_vote_time: float = 15.0
-    visibility_radius: int = 5
+    visibility_radius: int = 3
     agent_tick_interval: float = 3.0
     near_timeout_threshold: float = 5.0
     player_count: int = 5
@@ -524,6 +524,12 @@ class GameEngine:
                    next_phase.__class__.__name__ == 'VotingPhase':
                     self.phase = Phase.VOTING
                     self._state_timer = getattr(next_phase, 'timeout', self.cfg.vote_timeout)
+                    # Tell the renderer who is voting and for how long —
+                    # it shows a live voting board with per-player votes.
+                    await self._emit("voting", "voting_start", {
+                        "active_agents": [p.agent_id for p in self._get_active_players()],
+                        "timeout": self._state_timer,
+                    })
                 else:
                     self.phase = Phase.PLAYING
 
@@ -544,6 +550,13 @@ class GameEngine:
                     "from": {"x": old.x, "y": old.y},
                     "to": {"x": nx, "y": ny},
                 })
+            elif getattr(player, "ctx", None) is not None:
+                # Tell the agent its move was rejected so it can retry
+                # or pick another direction next turn.
+                player.ctx.set_temporary(
+                    "move_feedback",
+                    f"Your move to ({nx}, {ny}) was blocked — that tile "
+                    f"is not walkable. You did not move this turn.")
 
         chat_action = self.chat_context.route(self, player, chat_msg)
         if chat_action:
@@ -675,6 +688,14 @@ class GameEngine:
         self.phase = Phase.PLAYING
         self._game_timer = self.cfg.game_max_length
         self.recent_events.clear()
+        # Stale bodies from previous games must not linger — they would
+        # shadow new bodies with the same victim name and let a body be
+        # reported twice (see ReportBodyAction.execute).
+        self.dead_bodies.clear()
+        # Insurance: a game that ended mid-voting must not leak votes
+        # into the next one.
+        self.vote_choices.clear()
+        self._last_vote_log_second = -1
         self._game_kills = 0
         self._game_ejections = 0
         self._player_kills.clear()
@@ -753,7 +774,8 @@ class GameEngine:
         # used to return early, so the renderer never got spawn positions).
         player_list = [{
             "agent_id": p.agent_id, "name": p.name,
-            "tile": list(p.tile), "color_index": p.color_index}
+            "tile": list(p.tile), "color_index": p.color_index,
+            "agent_type": p.agent_type_name}
             for p in self.players.values()]
 
         self._trace("game_event", {

@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://brftsx5mnmhhq"]
 
 [ext_resource type="Script" uid="uid://bkh08vffn1f7e" path="res://Scripts/player.gd" id="1_kpjcp"]
-[ext_resource type="Texture2D" uid="uid://dj4e4hpwb2wg7" path="res://spites.png" id="2_kpjcp"]
+[ext_resource type="Texture2D" uid="uid://dvpxjfyfidmag" path="res://sprites/beans.png" id="2_kpjcp"]
 
 [sub_resource type="CircleShape2D" id="CircleShape2D_kpjcp"]
 
@@ -25,11 +25,10 @@ corner_radius_bottom_left = 6
 script = ExtResource("1_kpjcp")
 
 [node name="Sprite2D" type="Sprite2D" parent="." unique_id=2123072420]
-scale = Vector2(4, 4)
+scale = Vector2(2.495, 2.495)
 texture = ExtResource("2_kpjcp")
-hframes = 7
-vframes = 10
-frame = 35
+hframes = 4
+vframes = 30
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=1679472439]
 shape = SubResource("CircleShape2D_kpjcp")
@@ -49,8 +48,8 @@ autowrap_mode = 3
 
 [node name="NameLabel" type="Label" parent="." unique_id=30565550]
 offset_left = -118.0
-offset_top = 214.0
+offset_top = -430.0
 offset_right = 83.0
-offset_bottom = 283.0
+offset_bottom = -361.0
 horizontal_alignment = 1
 metadata/_edit_use_anchors_ = true

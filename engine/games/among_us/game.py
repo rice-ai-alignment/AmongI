@@ -18,6 +18,10 @@ class AmongUsGame(BaseGame):
 
     def setup(self, engine) -> None:
         """Assign agent types to players and initialise groups."""
+        # Always start a fresh game in the play phase — a previous game
+        # may have ended while the game object was on the VotingPhase,
+        # which would leave the next game stuck voting forever.
+        self._phase_index = 0
         active_ids = list(engine.players.keys())
         if not engine._agent_types:
             raise RuntimeError("No agent types configured for AmongUsGame")
